@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "../../../front/minimarket"
+		},
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"postman.settings.dotenv-detection-notification-visibility": false
+	}
+}

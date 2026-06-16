@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "products" ADD COLUMN     "attributes" JSONB NOT NULL DEFAULT '{}',
+ADD COLUMN     "expiryDate" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "imageUrl" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "location" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "stockMax" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "supplierId" TEXT NOT NULL DEFAULT '';

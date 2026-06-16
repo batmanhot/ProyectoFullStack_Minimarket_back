@@ -1,0 +1,782 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Prisma Schema — Minimarket POS SaaS
+// Estrategia multitenancy: row-level (tenantId en cada tabla)
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUPERADMIN / SaaS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Tenant {
+  id                 String   @id @default(uuid())
+  slug               String   @unique
+  businessName       String
+  sector             String   @default("bodega")
+  ruc                String   @default("")
+  ownerName          String
+  ownerEmail         String
+  phone              String   @default("")
+  plan               String   @default("trial")     // trial | basic | pro | enterprise
+  billingCycle       String   @default("monthly")   // monthly | quarterly | semiannual | annual
+  accessStartDate    DateTime @default(now())
+  accessExpiresAt    DateTime
+  isActive           Boolean  @default(true)
+  registrationSource String   @default("self-service") // self-service | superadmin
+  internalNotes      String   @default("")
+  systemVersion      String   @default("1.0.0")
+  emisorId           String   @default("")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  users          User[]
+  accesses       Access[]
+  renewals       Renewal[]
+  categories     Category[]
+  brands         Brand[]
+  products       Product[]
+  clients        Client[]
+  sales          Sale[]
+  purchases      Purchase[]
+  suppliers      Supplier[]
+  cashSessions   CashSession[]
+  returns        Return[]
+  campaigns      DiscountCampaign[]
+  tickets        DiscountTicket[]
+  stockMovements StockMovement[]
+  auditLogs      AuditLog[]
+  counters       Counter[]
+  mermaRecords   MermaRecord[]
+  quotations     Quotation[]
+  stockReserves  StockReserve[]    // NUEVO: reservas multi-caja
+
+  @@map("tenants")
+}
+
+model Access {
+  id              String   @id @default(uuid())
+  tenantId        String
+  plan            String
+  billingCycle    String
+  accessStartDate DateTime
+  accessExpiresAt DateTime
+  isActive        Boolean  @default(true)
+  notes           String   @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("accesses")
+}
+
+model Renewal {
+  id               String   @id @default(uuid())
+  tenantId         String
+  plan             String
+  billingCycle     String
+  startMode        String   @default("immediate") // immediate | expiry
+  accessStartDate  DateTime
+  accessExpiresAt  DateTime
+  amount           Float    @default(0)
+  notes            String   @default("")
+  createdAt        DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("renewals")
+}
+
+model PlanConfig {
+  id              String   @id @default(uuid())
+  plan            String   @unique // trial | basic | pro | enterprise
+  priceMonthly    Float    @default(0)
+  priceQuarterly  Float    @default(0)
+  priceSemiannual Float    @default(0)
+  priceAnnual     Float    @default(0)
+  maxProducts     Int      @default(100)
+  maxUsers        Int      @default(2)
+  maxSalesPerDay  Int      @default(50)
+  hasSunat        Boolean  @default(false)
+  hasMultiStore   Boolean  @default(false)
+  hasReports      Boolean  @default(false)
+  hasLoyalty      Boolean  @default(false)
+  hasApiAccess    Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+
+  @@map("plan_configs")
+}
+
+model SiteSettings {
+  id              String   @id @default("singleton")
+  heroTitle       String   @default("Minimarket POS")
+  heroSubtitle    String   @default("")
+  primaryColor    String   @default("#f59e0b")
+  logoUrl         String   @default("")
+  maintenanceMode Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+
+  @@map("site_settings")
+}
+
+model AlertThreshold {
+  id        String   @id @default("singleton")
+  warning   Int      @default(30)
+  urgent    Int      @default(7)
+  critical  Int      @default(1)
+  updatedAt DateTime @updatedAt
+
+  @@map("alert_thresholds")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// USUARIOS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String
+  fullName     String
+  username     String
+  passwordHash String
+  role         String   @default("cajero") // admin | gerente | supervisor | cajero
+  email        String   @default("")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sales         Sale[]
+  purchases     Purchase[]
+  sessions      CashSession[]
+  auditLogs     AuditLog[]
+  stockReserves StockReserve[] // NUEVO: reservas que creó este usuario
+
+  @@unique([tenantId, username])
+  @@map("users")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CATÁLOGO — Tablas auxiliares
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Category {
+  id          String   @id @default(uuid())
+  tenantId    String
+  slug        String
+  name        String
+  description String   @default("")
+  color       String   @default("#6b7280")
+  icon        String   @default("")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, slug])
+  @@map("categories")
+}
+
+model Brand {
+  id          String   @id @default(uuid())
+  tenantId    String
+  slug        String
+  name        String
+  description String   @default("")
+  color       String   @default("#6b7280")
+  logoUrl     String   @default("")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, slug])
+  @@map("brands")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CATÁLOGO — Productos
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Product {
+  id           String   @id @default(uuid())
+  tenantId     String
+  name         String
+  barcode      String   @default("")
+  sku          String   @default("")
+  categoryId   String   @default("")
+  brandId      String   @default("")
+  supplierId   String   @default("")
+  description  String   @default("")
+  type         String   @default("normal")  // normal | bundle | service
+  priceSell    Float    @default(0)
+  priceBuy     Float    @default(0)
+  margin       Float    @default(0)
+  stock        Float    @default(0)
+  stockMin     Float    @default(0)
+  stockMax     Float    @default(0)
+  unit         String   @default("unidad")
+  stockControl String   @default("simple") // simple | lote_fefo | lote_fifo | serie
+  hasVariants  Boolean  @default(false)
+  imageUrl     String   @default("")
+  location     String   @default("")
+  expiryDate   String   @default("")
+  attributes   Json     @default("{}")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  batches           ProductBatch[]
+  variants          ProductVariant[]
+  bundleParents     BundleComponent[]  @relation("BundleParent")
+  bundleChildren    BundleComponent[]  @relation("BundleChild")
+  saleItems         SaleItem[]
+  purchaseItems     PurchaseItem[]
+  returnItems       ReturnItem[]
+  stockMovements    StockMovement[]
+  mermaRecords      MermaRecord[]
+  stockReserveItems StockReserveItem[] // NUEVO: ítems reservados de este producto
+
+  @@unique([tenantId, barcode])
+  @@map("products")
+}
+
+model ProductBatch {
+  id         String    @id @default(uuid())
+  productId  String
+  number     String
+  expiryDate DateTime?
+  quantity   Float     @default(0)
+  priceBuy   Float     @default(0)
+  notes      String    @default("")
+  status     String    @default("activo") // activo | agotado | merma | vencido
+  createdAt  DateTime  @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_batches")
+}
+
+model ProductVariant {
+  id         String   @id @default(uuid())
+  productId  String
+  name       String
+  sku        String   @default("")
+  barcode    String   @default("")
+  stockMin   Float    @default(2)
+  stock      Float    @default(0)
+  priceSell  Float?
+  attributes Json     @default("{}")
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_variants")
+}
+
+model BundleComponent {
+  id        String @id @default(uuid())
+  bundleId  String
+  productId String
+  quantity  Float
+
+  bundle  Product @relation("BundleParent", fields: [bundleId],  references: [id], onDelete: Cascade)
+  product Product @relation("BundleChild",  fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([bundleId, productId])
+  @@map("bundle_components")
+}
+
+model StockMovement {
+  id            String   @id @default(uuid())
+  tenantId      String
+  productId     String
+  productName   String
+  variantId     String?
+  type          String   // entrada | salida
+  quantity      Float
+  previousStock Float
+  newStock      Float
+  reason        String
+  invoiceNumber String   @default("")
+  userId        String   @default("")
+  unitPrice     Float    @default(0)
+  totalSale     Float    @default(0)
+  batchId       String?
+  createdAt     DateTime @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId],  references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("stock_movements")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RESERVA DE STOCK MULTI-CAJA
+// TTL = 10 minutos. Se elimina al completar/cancelar venta o al expirar.
+// Garantiza que dos cajeros simultáneos no vendan el mismo stock.
+// Stock disponible = product.stock − SUM(reservas activas de OTROS cajeros)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model StockReserve {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User               @relation(fields: [userId],   references: [id])
+  items  StockReserveItem[]
+
+  @@map("stock_reserves")
+}
+
+model StockReserveItem {
+  id        String @id @default(uuid())
+  reserveId String
+  productId String
+  quantity  Float
+
+  reserve StockReserve @relation(fields: [reserveId], references: [id], onDelete: Cascade)
+  product Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([reserveId, productId])
+  @@map("stock_reserve_items")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLIENTES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Client {
+  id                 String   @id @default(uuid())
+  tenantId           String
+  name               String
+  documentType       String   @default("DNI") // DNI | RUC | Pasaporte | CE
+  documentNumber     String
+  email              String   @default("")
+  phone              String   @default("")
+  address            String   @default("")
+  currentDebt        Float    @default(0)
+  creditLimit        Float    @default(0)
+  loyaltyPoints      Int      @default(0)
+  loyaltyAccumulated Float    @default(0)
+  loyaltyLevel       String   @default("bronce")
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sales               Sale[]
+  returns             Return[]
+  loyaltyTransactions LoyaltyTransaction[]
+
+  @@unique([tenantId, documentNumber])
+  @@map("clients")
+}
+
+model LoyaltyTransaction {
+  id            String   @id @default(uuid())
+  clientId      String
+  type          String   // earn | redeem
+  points        Int
+  discount      Float    @default(0)
+  saleId        String   @default("")
+  invoiceNumber String   @default("")
+  saleTotal     Float    @default(0)
+  level         String   @default("")
+  createdAt     DateTime @default(now())
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("loyalty_transactions")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VENTAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Sale {
+  id                String    @id @default(uuid())
+  tenantId          String
+  invoiceNumber     String
+  tipoComprobante   String    @default("ticket") // ticket | boleta | factura
+  clientId          String?
+  clientName        String    @default("")
+  clientDocument    String    @default("")
+  userId            String
+  subtotal          Float     @default(0)
+  discount          Float     @default(0)
+  loyaltyDiscount   Float     @default(0)
+  igvRate           Float     @default(0.18)
+  igv               Float     @default(0)
+  total             Float
+  redeemedPoints    Int       @default(0)
+  status            String    @default("completada") // completada | cancelada
+  cancelReason      String    @default("")
+  cancelledAt       DateTime?
+  comprobanteId     String    @default("")
+  comprobanteNumero String    @default("")
+  sunatStatus       String    @default("no-aplica") // no-aplica | pendiente | emitido | error
+  comprobanteError  String    @default("")
+  createdAt         DateTime  @default(now())
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  client   Client?       @relation(fields: [clientId], references: [id])
+  user     User          @relation(fields: [userId],   references: [id])
+  items    SaleItem[]
+  payments SalePayment[]
+  returns  Return[]
+
+  @@map("sales")
+}
+
+model SaleItem {
+  id               String  @id @default(uuid())
+  saleId           String
+  productId        String
+  variantId        String?
+  productName      String
+  barcode          String  @default("")
+  quantity         Float
+  unitPrice        Float
+  discount         Float   @default(0)
+  campaignDiscount Float   @default(0)
+  totalDiscount    Float   @default(0)
+  netTotal         Float   @default(0)
+  unit             String  @default("unidad")
+  stockControlUsed String  @default("simple")
+  isBundle         Boolean @default(false)
+  fromBundle       String  @default("")
+  bundleName       String  @default("")
+
+  sale             Sale           @relation(fields: [saleId],     references: [id], onDelete: Cascade)
+  product          Product        @relation(fields: [productId],  references: [id])
+  batchAllocations SaleItemBatch[]
+
+  @@map("sale_items")
+}
+
+model SaleItemBatch {
+  id          String @id @default(uuid())
+  saleItemId  String
+  batchId     String
+  batchNumber String
+  quantity    Float
+  expiryDate  String @default("")
+
+  saleItem SaleItem @relation(fields: [saleItemId], references: [id], onDelete: Cascade)
+
+  @@map("sale_item_batches")
+}
+
+model SalePayment {
+  id        String @id @default(uuid())
+  saleId    String
+  method    String // efectivo | yape | plin | tarjeta | qr | transferencia | link | credito
+  amount    Float
+  reference String @default("")
+
+  sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+
+  @@map("sale_payments")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CAJA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model CashSession {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  userId             String
+  status             String    @default("abierta") // abierta | cerrada
+  openingAmount      Float     @default(0)
+  openedAt           DateTime  @default(now())
+  closedAt           DateTime?
+  countedAmount      Float?
+  expectedAmount     Float?
+  difference         Float?
+  salesCount         Int       @default(0)
+  totalSales         Float     @default(0)
+  totalDebtCollected Float     @default(0)
+  debtPaymentsCount  Int       @default(0)
+  notes              String    @default("")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId],   references: [id])
+
+  @@map("cash_sessions")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PROVEEDORES Y COMPRAS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Supplier {
+  id            String   @id @default(uuid())
+  tenantId      String
+  name          String
+  contactPerson String   @default("")
+  email         String   @default("")
+  phone         String   @default("")
+  address       String   @default("")
+  ruc           String   @default("")
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId],  references: [id], onDelete: Cascade)
+  purchases Purchase[]
+
+  @@map("suppliers")
+}
+
+model Purchase {
+  id           String   @id @default(uuid())
+  tenantId     String
+  supplierId   String?
+  supplierName String   @default("")
+  status       String   @default("confirmada") // confirmada | recibida | anulada
+  total        Float    @default(0)
+  userId       String
+  notes        String   @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant         @relation(fields: [tenantId],  references: [id], onDelete: Cascade)
+  supplier Supplier?      @relation(fields: [supplierId], references: [id])
+  user     User           @relation(fields: [userId],    references: [id])
+  items    PurchaseItem[]
+
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         String @id @default(uuid())
+  purchaseId String
+  productId  String
+  quantity   Float
+  priceBuy   Float
+  total      Float
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId],  references: [id])
+
+  @@map("purchase_items")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEVOLUCIONES / NOTAS DE CRÉDITO
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Return {
+  id              String    @id @default(uuid())
+  tenantId        String
+  ncNumber        String
+  saleId          String?
+  invoiceNumber   String    @default("")
+  tipoComprobante String    @default("nc")
+  clientId        String?
+  clientName      String    @default("")
+  userId          String
+  userName        String    @default("")
+  reason          String    // anulacion | defecto | devolucion
+  reasonLabel     String
+  reasonNote      String    @default("")
+  totalRefund     Float
+  baseImponible   Float     @default(0)
+  igv             Float     @default(0)
+  igvRate         Float     @default(0.18)
+  status          String    @default("completada") // completada | anulada
+  sunatStatus     String    @default("pendiente")  // pendiente | emitido | error
+  anulatedAt      DateTime?
+  anulationReason String    @default("")
+  createdAt       DateTime  @default(now())
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sale   Sale?        @relation(fields: [saleId],   references: [id])
+  client Client?      @relation(fields: [clientId], references: [id])
+  items  ReturnItem[]
+
+  @@map("returns")
+}
+
+model ReturnItem {
+  id           String @id @default(uuid())
+  returnId     String
+  saleItemId   String @default("")
+  productId    String
+  productName  String
+  barcode      String @default("")
+  quantity     Float
+  unitPrice    Float
+  netUnitPrice Float
+  discount     Float  @default(0)
+  totalRefund  Float
+  unit         String @default("unidad")
+  batchId      String @default("")
+  batchNumber  String @default("")
+  expiryDate   String @default("")
+
+  return  Return  @relation(fields: [returnId],  references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("return_items")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DESCUENTOS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model DiscountCampaign {
+  id             String   @id @default(uuid())
+  tenantId       String
+  name           String
+  type           String   // porcentaje | monto_fijo | compra_lleva | bogo
+  discount       Float    @default(0)
+  discountAmount Float    @default(0)
+  minAmount      Float    @default(0)
+  maxDiscount    Float    @default(0)
+  applicableTo   String   @default("todos") // todos | categoria | producto
+  productIds     String[] @default([])
+  categoryIds    String[] @default([])
+  validFrom      DateTime
+  validTo        DateTime
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("discount_campaigns")
+}
+
+model DiscountTicket {
+  id           String    @id @default(uuid())
+  tenantId     String
+  code         String
+  discount     Float
+  minAmount    Float     @default(0)
+  validFrom    DateTime?
+  validTo      DateTime?
+  used         Boolean   @default(false)
+  usedAt       DateTime?
+  usedBySaleId String    @default("")
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, code])
+  @@map("discount_tickets")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONTADORES DE COMPROBANTE POR TENANT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Counter {
+  id       String @id @default(uuid())
+  tenantId String
+  type     String // ticket | boleta | factura | nc
+  current  Int    @default(0)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, type])
+  @@map("counters")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDITORÍA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  userName  String   @default("")
+  action    String   // CREATE | UPDATE | DELETE | CANCEL | LOGIN | LOGOUT | EXPORT
+  entity    String
+  entityId  String   @default("")
+  detail    String   @default("")
+  ip        String   @default("")
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId],   references: [id])
+
+  @@map("audit_logs")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MERMA
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model MermaRecord {
+  id          String   @id @default(uuid())
+  tenantId    String
+  productId   String
+  productName String
+  batchId     String   @default("")
+  quantity    Float
+  unit        String   @default("unidad")
+  reason      String   // vencido | dañado | hurto | otro
+  status      String   @default("en_merma") // en_merma | devuelto | repuesto
+  notes       String   @default("")
+  costUnit    Float    @default(0)
+  userId      String   @default("")
+  userName    String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId],  references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("merma_records")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COTIZACIONES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Quotation {
+  id         String   @id @default(uuid())
+  tenantId   String
+  number     String
+  clientId   String   @default("")
+  clientName String   @default("")
+  items      Json
+  note       String   @default("")
+  validDays  Int      @default(7)
+  expiresAt  DateTime
+  total      Float    @default(0)
+  status     String   @default("borrador") // borrador | enviada | aprobada | convertida | vencida
+  saleId     String?
+  userId     String   @default("")
+  userName   String   @default("")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, number])
+  @@map("quotations")
+}
