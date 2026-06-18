@@ -18,13 +18,13 @@ const PRE     = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
 
 const variantCreateSchema = z.object({
-  name:       z.string().min(1),
+  name:       z.string().optional(),
   sku:        z.string().default(''),
   barcode:    z.string().default(''),
   stock:      z.number().min(0).default(0),
   stockMin:   z.number().min(0).default(2),
-  priceSell:  z.number().min(0).optional(),
-  attributes: z.record(z.string()).default({}), // { "talla": "L", "color": "rojo" }
+  priceSell:  z.number().min(0).nullable().optional(),
+  attributes: z.record(z.string()).default({}),
   isActive:   z.boolean().default(true),
 })
 
@@ -32,8 +32,9 @@ const variantUpdateSchema = z.object({
   name:      z.string().min(1).optional(),
   sku:       z.string().optional(),
   barcode:   z.string().optional(),
+  stock:     z.number().min(0).optional(),
   stockMin:  z.number().min(0).optional(),
-  priceSell: z.number().min(0).optional(),
+  priceSell: z.number().min(0).nullable().optional(),
   attributes:z.record(z.string()).optional(),
   isActive:  z.boolean().optional(),
 })
@@ -66,6 +67,11 @@ export default async function variantsRoutes(fastify) {
       return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
     }
 
+    // Derivar nombre desde atributos si no fue enviado por el frontend
+    const variantName = parsed.data.name?.trim()
+      || Object.values(parsed.data.attributes).join(' · ')
+      || 'Variante'
+
     const product = await prisma.product.findFirst({
       where:   { id: req.params.productId, tenantId: req.tenantId },
       include: { variants: true },
@@ -88,7 +94,7 @@ export default async function variantsRoutes(fastify) {
 
     const variant = await prisma.$transaction(async (tx) => {
       const newVariant = await tx.productVariant.create({
-        data: { ...parsed.data, productId: req.params.productId },
+        data: { ...parsed.data, name: variantName, productId: req.params.productId },
       })
 
       // Asegurar que el producto padre tenga hasVariants = true
@@ -122,7 +128,7 @@ export default async function variantsRoutes(fastify) {
             quantity:     parsed.data.stock,
             previousStock:0,
             newStock:     parsed.data.stock,
-            reason:       `Stock inicial variante: ${parsed.data.name}`,
+            reason:       `Stock inicial variante: ${variantName}`,
             userId:       req.user.id,
           },
         })
@@ -146,25 +152,55 @@ export default async function variantsRoutes(fastify) {
       return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
     }
 
-    const updated = await prisma.productVariant.update({
-      where: { id: variant.id },
-      data:  { ...parsed.data, updatedAt: new Date() },
+    const product = await prisma.product.findFirst({
+      where:   { id: req.params.productId, tenantId: req.tenantId },
+      include: { variants: true },
     })
+    if (!product) return send404(reply, 'Producto')
 
-    // Si se desactivó la variante, recalcular stock del padre
-    if (parsed.data.isActive === false) {
-      const siblings = await prisma.productVariant.findMany({
-        where: { productId: req.params.productId },
+    const prevStock = variant.stock ?? 0
+    const newStock  = parsed.data.stock ?? prevStock
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedVariant = await tx.productVariant.update({
+        where: { id: variant.id },
+        data:  { ...parsed.data, updatedAt: new Date() },
       })
-      const totalStock = siblings
-        .map(v => v.id === updated.id ? updated : v)
+
+      // Recalcular stock del producto padre sumando todas las variantes activas
+      const allVariants = product.variants.map(v =>
+        v.id === updatedVariant.id ? updatedVariant : v
+      )
+      const totalStock = allVariants
         .filter(v => v.isActive)
         .reduce((s, v) => s + (v.stock ?? 0), 0)
-      await prisma.product.update({
-        where: { id: req.params.productId },
+
+      await tx.product.update({
+        where: { id: product.id },
         data:  { stock: totalStock },
       })
-    }
+
+      // Registrar movimiento si cambió el stock
+      if (parsed.data.stock !== undefined && parsed.data.stock !== prevStock) {
+        const delta = newStock - prevStock
+        await tx.stockMovement.create({
+          data: {
+            tenantId:     req.tenantId,
+            productId:    product.id,
+            productName:  product.name,
+            variantId:    updatedVariant.id,
+            type:         delta > 0 ? 'entrada' : 'salida',
+            quantity:     Math.abs(delta),
+            previousStock: prevStock,
+            newStock,
+            reason:       'Ajuste manual desde catálogo',
+            userId:       req.user.id,
+          },
+        })
+      }
+
+      return updatedVariant
+    })
 
     return sendOk(reply, updated)
   })

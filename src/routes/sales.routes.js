@@ -176,10 +176,10 @@ export default async function salesRoutes(fastify) {
               bundleName:       item._bundleName || '',
               batchAllocations: item.batchAllocations?.length
                 ? { create: item.batchAllocations.map(a => ({
-                    batchId:     a.batchId,
+                    batchId:     a.batchId     || '',
                     batchNumber: a.batchNumber || '',
                     quantity:    a.quantity,
-                    expiryDate:  a.expiryDate || '',
+                    expiryDate:  a.expiryDate  || '',
                   })) }
                 : undefined,
             })),
@@ -195,7 +195,19 @@ export default async function salesRoutes(fastify) {
         include: { items: { include: { batchAllocations: true } }, payments: true },
       })
 
-      // ── 5. Deuda a crédito ───────────────────────────────────────────────
+      // ── 5. Vincular saleId a los seriales vendidos ───────────────────────
+      // allocateStock marca el serial como 'vendido' pero sin saleId (aún no existía).
+      // Ahora que tenemos newSale.id lo enlazamos.
+      for (const ei of enrichedItems) {
+        if (ei.stockControlUsed === 'serie' && ei.selectedSerial) {
+          await tx.productSerial.updateMany({
+            where: { tenantId, serialNumber: ei.selectedSerial, status: 'vendido' },
+            data:  { saleId: newSale.id },
+          })
+        }
+      }
+
+      // ── 6. Deuda a crédito ───────────────────────────────────────────────
       if (client) {
         const creditPmt = body.payments?.find(p => p.method === 'credito')
         if (creditPmt) {

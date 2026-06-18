@@ -25,9 +25,23 @@ export async function allocateStock({ product, item, invoiceNumber, userId }) {
 
   // Número de serie
   if (stockControl === 'serie') {
-    const prev = product.stock
-    await prisma.product.update({ where: { id: product.id }, data: { stock: Math.max(0, prev - qty) } })
-    return { batchAllocations: [], stockControlUsed: 'serie', stockDelta: -qty }
+    // Marcar el serial específico como vendido (sin saleId aún — se actualiza después de crear la venta)
+    if (item.selectedSerial) {
+      await prisma.productSerial.updateMany({
+        where: { productId: product.id, serialNumber: item.selectedSerial, status: 'disponible' },
+        data:  { status: 'vendido', invoiceNumber, soldAt: new Date() },
+      })
+    }
+    // Stock = count de seriales disponibles (fuente de verdad)
+    const disponibles = await prisma.productSerial.count({
+      where: { productId: product.id, status: 'disponible' },
+    })
+    await prisma.product.update({ where: { id: product.id }, data: { stock: disponibles } })
+    return {
+      batchAllocations: item.selectedSerial ? [{ batchNumber: item.selectedSerial, quantity: 1 }] : [],
+      stockControlUsed: 'serie',
+      stockDelta: -qty,
+    }
   }
 
   // Lote FEFO (First Expired First Out)
@@ -95,6 +109,22 @@ export async function restoreStock({ product, item }) {
       })
       return
     }
+  }
+
+  // Número de serie: restaurar el serial específico a disponible
+  if (item.stockControlUsed === 'serie' && item.batchAllocations?.length) {
+    const serialNumber = item.batchAllocations[0].batchNumber
+    if (serialNumber) {
+      await prisma.productSerial.updateMany({
+        where: { productId: product.id, serialNumber },
+        data:  { status: 'disponible', saleId: '', invoiceNumber: '', soldAt: null },
+      })
+    }
+    const disponibles = await prisma.productSerial.count({
+      where: { productId: product.id, status: 'disponible' },
+    })
+    await prisma.product.update({ where: { id: product.id }, data: { stock: disponibles } })
+    return
   }
 
   if ((stockControl === 'lote_fefo' || stockControl === 'lote_fifo') && item.batchAllocations?.length) {

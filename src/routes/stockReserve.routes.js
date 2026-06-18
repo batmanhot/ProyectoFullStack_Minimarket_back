@@ -34,18 +34,22 @@ async function cleanExpiredReserves(tenantId) {
 }
 
 // ── Stock disponible = stock real − reservas activas de OTROS cajeros ─────────
+// productId vive en StockReserveItem (tabla hija), no en StockReserve.
+// Se agrega sobre StockReserveItem filtrando la reserva padre por tenantId/expiresAt.
 async function getAvailableStock(tenantId, productId, excludeReserveId = null) {
   const product = await prisma.product.findFirst({
     where: { id: productId, tenantId },
   })
   if (!product) return 0
 
-  const reservedByOthers = await prisma.stockReserve.aggregate({
+  const reservedByOthers = await prisma.stockReserveItem.aggregate({
     where: {
-      tenantId,
       productId,
-      expiresAt: { gt: new Date() },
-      ...(excludeReserveId && { id: { not: excludeReserveId } }),
+      reserve: {
+        tenantId,
+        expiresAt: { gt: new Date() },
+        ...(excludeReserveId && { id: { not: excludeReserveId } }),
+      },
     },
     _sum: { quantity: true },
   })
