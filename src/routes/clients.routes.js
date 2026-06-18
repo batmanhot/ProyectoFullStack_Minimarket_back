@@ -2,6 +2,7 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -47,7 +48,7 @@ export default async function clientsRoutes(fastify) {
       prisma.client.count({ where }),
     ])
 
-    return reply.send({ data: clients, meta: { total } })
+    return sendOk(reply, clients, { total })
   })
 
   // GET /api/clients/:id
@@ -56,31 +57,30 @@ export default async function clientsRoutes(fastify) {
       where:   { id: req.params.id, tenantId: req.tenantId },
       include: { loyaltyTransactions: { orderBy: { createdAt: 'desc' }, take: 50 } },
     })
-    if (!client) return reply.code(404).send({ error: 'Cliente no encontrado' })
-    return reply.send({ data: client })
+    if (!client) return send404(reply, 'Cliente')
+    return sendOk(reply, client)
   })
 
   // POST /api/clients
   fastify.post('/clients', { preHandler: PRE }, async (req, reply) => {
     const parsed = clientSchema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
-    // Verificar documento único por tenant
     const existing = await prisma.client.findUnique({
       where: { tenantId_documentNumber: { tenantId: req.tenantId, documentNumber: parsed.data.documentNumber } },
     })
-    if (existing) return reply.code(409).send({ error: `Ya existe un cliente con documento ${parsed.data.documentNumber}` })
+    if (existing) return send409(reply, `Ya existe un cliente con documento ${parsed.data.documentNumber}`)
 
     const client = await prisma.client.create({
       data: { ...parsed.data, tenantId: req.tenantId },
     })
-    return reply.code(201).send({ data: client })
+    return sendOk(reply, client, null, 201)
   })
 
   // PUT /api/clients/:id
   fastify.put('/clients/:id', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.client.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!existing) return reply.code(404).send({ error: 'Cliente no encontrado' })
+    if (!existing) return send404(reply, 'Cliente')
 
     // Campos permitidos para actualizar (excluir puntos y deuda — se manejan por lógica de ventas)
     const {
@@ -93,28 +93,28 @@ export default async function clientsRoutes(fastify) {
     const client = await prisma.client.update({
       where: { id: req.params.id },
       data: {
-        ...(name           !== undefined && { name }),
-        ...(documentType   !== undefined && { documentType }),
-        ...(documentNumber !== undefined && { documentNumber }),
-        ...(email          !== undefined && { email }),
-        ...(phone          !== undefined && { phone }),
-        ...(address        !== undefined && { address }),
-        ...(creditLimit    !== undefined && { creditLimit }),
-        ...(isActive       !== undefined && { isActive }),
-        ...(loyaltyPoints  !== undefined && { loyaltyPoints }),
+        ...(name               !== undefined && { name }),
+        ...(documentType       !== undefined && { documentType }),
+        ...(documentNumber     !== undefined && { documentNumber }),
+        ...(email              !== undefined && { email }),
+        ...(phone              !== undefined && { phone }),
+        ...(address            !== undefined && { address }),
+        ...(creditLimit        !== undefined && { creditLimit }),
+        ...(isActive           !== undefined && { isActive }),
+        ...(loyaltyPoints      !== undefined && { loyaltyPoints }),
         ...(loyaltyAccumulated !== undefined && { loyaltyAccumulated }),
-        ...(loyaltyLevel   !== undefined && { loyaltyLevel }),
-        ...(currentDebt    !== undefined && { currentDebt }),
+        ...(loyaltyLevel       !== undefined && { loyaltyLevel }),
+        ...(currentDebt        !== undefined && { currentDebt }),
       },
     })
-    return reply.send({ data: client })
+    return sendOk(reply, client)
   })
 
   // DELETE /api/clients/:id  (soft delete)
   fastify.delete('/clients/:id', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.client.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!existing) return reply.code(404).send({ error: 'Cliente no encontrado' })
+    if (!existing) return send404(reply, 'Cliente')
     await prisma.client.update({ where: { id: req.params.id }, data: { isActive: false } })
-    return reply.send({ data: { id: req.params.id, deleted: true } })
+    return sendOk(reply, { id: req.params.id, deleted: true })
   })
 }

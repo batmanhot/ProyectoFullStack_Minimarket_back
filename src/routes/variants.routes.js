@@ -12,6 +12,7 @@ import { z }           from 'zod'
 import prisma          from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, send404, send409 } from '../utils/response.js'
 
 const PRE     = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
@@ -44,7 +45,7 @@ export default async function variantsRoutes(fastify) {
     const product = await prisma.product.findFirst({
       where: { id: req.params.productId, tenantId: req.tenantId },
     })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
     const variants = await prisma.productVariant.findMany({
       where:   { productId: req.params.productId },
@@ -69,7 +70,7 @@ export default async function variantsRoutes(fastify) {
       where:   { id: req.params.productId, tenantId: req.tenantId },
       include: { variants: true },
     })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
     // Si el barcode no está vacío, verificar unicidad dentro del tenant
     if (parsed.data.barcode) {
@@ -81,7 +82,7 @@ export default async function variantsRoutes(fastify) {
         },
       })
       if (barcodeConflict) {
-        return reply.code(409).send({ error: `El barcode "${parsed.data.barcode}" ya está en uso por otra variante` })
+        return send409(reply, `El barcode "${parsed.data.barcode}" ya está en uso por otra variante`)
       }
     }
 
@@ -130,7 +131,7 @@ export default async function variantsRoutes(fastify) {
       return newVariant
     })
 
-    return reply.code(201).send({ data: variant })
+    return sendOk(reply, variant, null, 201)
   })
 
   // PUT /api/products/:productId/variants/:id
@@ -138,7 +139,7 @@ export default async function variantsRoutes(fastify) {
     const variant = await prisma.productVariant.findFirst({
       where: { id: req.params.id, productId: req.params.productId },
     })
-    if (!variant) return reply.code(404).send({ error: 'Variante no encontrada' })
+    if (!variant) return send404(reply, 'Variante')
 
     const parsed = variantUpdateSchema.safeParse(req.body)
     if (!parsed.success) {
@@ -165,7 +166,7 @@ export default async function variantsRoutes(fastify) {
       })
     }
 
-    return reply.send({ data: updated })
+    return sendOk(reply, updated)
   })
 
   // PATCH /api/products/:productId/variants/:id/stock — ajuste manual de stock
@@ -183,13 +184,13 @@ export default async function variantsRoutes(fastify) {
     const variant = await prisma.productVariant.findFirst({
       where: { id: req.params.id, productId: req.params.productId },
     })
-    if (!variant) return reply.code(404).send({ error: 'Variante no encontrada' })
+    if (!variant) return send404(reply, 'Variante')
 
     const product = await prisma.product.findFirst({
       where:   { id: req.params.productId, tenantId: req.tenantId },
       include: { variants: true },
     })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
     const prevStock = variant.stock ?? 0
     const delta     = parsed.data.type === 'entrada' ? parsed.data.quantity : -parsed.data.quantity
@@ -228,7 +229,7 @@ export default async function variantsRoutes(fastify) {
       })
     })
 
-    return reply.send({ data: { id: variant.id, stock: newStock } })
+    return sendOk(reply, { id: variant.id, stock: newStock })
   })
 
   // DELETE /api/products/:productId/variants/:id  (soft delete)
@@ -236,7 +237,7 @@ export default async function variantsRoutes(fastify) {
     const variant = await prisma.productVariant.findFirst({
       where: { id: req.params.id, productId: req.params.productId },
     })
-    if (!variant) return reply.code(404).send({ error: 'Variante no encontrada' })
+    if (!variant) return send404(reply, 'Variante')
 
     await prisma.$transaction(async (tx) => {
       await tx.productVariant.update({
@@ -256,6 +257,6 @@ export default async function variantsRoutes(fastify) {
       })
     })
 
-    return reply.send({ data: { id: variant.id, deleted: true } })
+    return sendOk(reply, { id: variant.id, deleted: true })
   })
 }

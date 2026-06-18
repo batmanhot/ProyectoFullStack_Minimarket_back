@@ -2,6 +2,7 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
@@ -29,7 +30,7 @@ export default async function cashRoutes(fastify) {
       prisma.cashSession.count({ where }),
     ])
 
-    return reply.send({ data: sessions, meta: { total } })
+    return sendOk(reply, sessions, { total })
   })
 
   // GET /api/cash/active  — sesión actualmente abierta
@@ -39,7 +40,7 @@ export default async function cashRoutes(fastify) {
       orderBy: { openedAt: 'desc' },
       include: { user: { select: { fullName: true } } },
     })
-    return reply.send({ data: session || null })
+    return sendOk(reply, session || null)
   })
 
   // POST /api/cash/open  — apertura de caja
@@ -50,12 +51,12 @@ export default async function cashRoutes(fastify) {
       notes:         z.string().default(''),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos' })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
     const open = await prisma.cashSession.findFirst({
       where: { tenantId: req.tenantId, status: 'abierta' },
     })
-    if (open) return reply.code(409).send({ error: 'Ya existe una caja abierta. Ciérrala antes de abrir una nueva.' })
+    if (open) return send409(reply, 'Ya existe una caja abierta. Ciérrala antes de abrir una nueva.')
 
     const session = await prisma.cashSession.create({
       data: {
@@ -63,12 +64,12 @@ export default async function cashRoutes(fastify) {
         tenantId:      req.tenantId,
         userId:        req.user.id,
         status:        'abierta',
-        openingAmount: parsed.data.openingAmount,  // FIX: campo correcto del schema
+        openingAmount: parsed.data.openingAmount,
         openedAt:      new Date(),
         notes:         parsed.data.notes,
       },
     })
-    return reply.code(201).send({ data: session })
+    return sendOk(reply, session, null, 201)
   })
 
   // POST /api/cash/:id/close  — cierre de caja
@@ -78,13 +79,13 @@ export default async function cashRoutes(fastify) {
       notes:         z.string().default(''),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Se requiere el monto contado' })
+    if (!parsed.success) return sendError(reply, 'Se requiere el monto contado')
 
     const session = await prisma.cashSession.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!session) return reply.code(404).send({ error: 'Sesión de caja no encontrada' })
-    if (session.status === 'cerrada') return reply.code(409).send({ error: 'Esta caja ya está cerrada' })
+    if (!session) return send404(reply, 'Sesión de caja')
+    if (session.status === 'cerrada') return send409(reply, 'Esta caja ya está cerrada')
 
     // Calcular totales reales del turno desde la DB
     const salesInSession = await prisma.sale.findMany({
@@ -116,7 +117,6 @@ export default async function cashRoutes(fastify) {
       }
     }
 
-    // FIX: usar session.openingAmount (campo correcto del schema Prisma)
     const expectedAmount = HALF_UP(session.openingAmount + effectiveSales)
     const difference     = HALF_UP(parsed.data.countedAmount - expectedAmount)
 
@@ -125,7 +125,7 @@ export default async function cashRoutes(fastify) {
       data: {
         status:             'cerrada',
         closedAt:           new Date(),
-        countedAmount:      parsed.data.countedAmount,  // campo correcto del schema
+        countedAmount:      parsed.data.countedAmount,
         expectedAmount,
         difference,
         salesCount,
@@ -136,6 +136,6 @@ export default async function cashRoutes(fastify) {
       },
     })
 
-    return reply.send({ data: closed })
+    return sendOk(reply, closed)
   })
 }

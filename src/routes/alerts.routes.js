@@ -1,6 +1,7 @@
 import prisma    from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -110,6 +111,6 @@ export default async function alertsRoutes(fastify) {
     const bySeverity = { critical: 0, urgent: 0, warning: 0, info: 0 }
     for (const a of alerts) bySeverity[a.severity] = (bySeverity[a.severity] || 0) + 1
 
-    return reply.send({ data: alerts, meta: { total: alerts.length, bySeverity } })
+    return sendOk(reply, alerts, { total: alerts.length, bySeverity })
   })
 }

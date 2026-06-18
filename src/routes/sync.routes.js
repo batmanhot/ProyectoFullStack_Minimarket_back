@@ -21,6 +21,7 @@ import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { allocateStock, restoreStock, calcPointsEarned } from '../services/inventory.service.js'
 import { nextInvoiceNumber } from '../utils/invoiceCounter.js'
+import { sendOk, sendError } from '../utils/response.js'
 
 const PRE     = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
@@ -31,7 +32,7 @@ export default async function syncRoutes(fastify) {
   fastify.post('/sync/pending-sales', { preHandler: PRE }, async (req, reply) => {
     const ops = req.body?.ops
     if (!Array.isArray(ops) || ops.length === 0) {
-      return reply.code(400).send({ error: 'Se requiere un array "ops" con operaciones pendientes' })
+      return sendError(reply, 'Se requiere un array "ops" con operaciones pendientes')
     }
 
     const tenantId = req.tenantId
@@ -301,6 +302,6 @@ export default async function syncRoutes(fastify) {
       error:   results.filter(r => r.status === 'error').length,
     }
 
-    return reply.send({ data: results, meta: summary })
+    return sendOk(reply, results, summary)
   })
 }

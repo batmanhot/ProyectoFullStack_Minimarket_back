@@ -1,6 +1,7 @@
 import prisma    from '../db.js'
 import { requireAuth } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk } from '../utils/response.js'
 
 // FIX: quitamos requireAdmin — reportes accesibles a todos los roles autenticados.
 // Si se quiere restringir por rol, hacerlo en el frontend o pasar a requireAdmin solo
@@ -62,25 +63,23 @@ export default async function reportsRoutes(fastify) {
       byPayment[k] = parseFloat(byPayment[k].toFixed(2))
     }
 
-    return reply.send({
-      data: {
-        ventas: {
-          count: sales.length,
-          total: parseFloat(totalVentas.toFixed(2)),
-          igv:   parseFloat(totalIgv.toFixed(2)),
-          base:  parseFloat(totalBase.toFixed(2)),
-        },
-        devoluciones: {
-          count: returns.length,
-          total: parseFloat(totalDevoluciones.toFixed(2)),
-        },
-        compras: {
-          count: purchases.length,
-          total: parseFloat(totalCompras.toFixed(2)),
-        },
-        utilidadBruta: parseFloat((totalVentas - totalCompras - totalDevoluciones).toFixed(2)),
-        byPayment,
+    return sendOk(reply, {
+      ventas: {
+        count: sales.length,
+        total: parseFloat(totalVentas.toFixed(2)),
+        igv:   parseFloat(totalIgv.toFixed(2)),
+        base:  parseFloat(totalBase.toFixed(2)),
       },
+      devoluciones: {
+        count: returns.length,
+        total: parseFloat(totalDevoluciones.toFixed(2)),
+      },
+      compras: {
+        count: purchases.length,
+        total: parseFloat(totalCompras.toFixed(2)),
+      },
+      utilidadBruta: parseFloat((totalVentas - totalCompras - totalDevoluciones).toFixed(2)),
+      byPayment,
     })
   })
 
@@ -132,7 +131,7 @@ export default async function reportsRoutes(fastify) {
       .slice(0, parseInt(limit) || 20)
       .map(p => ({ ...p, revenue: parseFloat(p.revenue.toFixed(2)) }))
 
-    return reply.send({ data: sorted, meta: { total: sorted.length } })
+    return sendOk(reply, sorted, { total: sorted.length })
   })
 
   // GET /api/reports/categories?from=&to=  — ventas por categoría
@@ -170,7 +169,7 @@ export default async function reportsRoutes(fastify) {
       .sort((a, b) => b.revenue - a.revenue)
       .map(c => ({ ...c, revenue: parseFloat(c.revenue.toFixed(2)) }))
 
-    return reply.send({ data: result })
+    return sendOk(reply, result)
   })
 
   // GET /api/reports/daily?from=&to=  — ventas agrupadas por día
@@ -198,7 +197,7 @@ export default async function reportsRoutes(fastify) {
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => ({ ...d, total: parseFloat(d.total.toFixed(2)) }))
 
-    return reply.send({ data: sorted })
+    return sendOk(reply, sorted)
   })
 
   // GET /api/reports/merma?from=&to=  — resumen de mermas
@@ -224,7 +223,7 @@ export default async function reportsRoutes(fastify) {
     const result = Object.values(byReason)
       .map(r => ({ ...r, cost: parseFloat(r.cost.toFixed(2)) }))
 
-    return reply.send({ data: result, meta: { total: records.length } })
+    return sendOk(reply, result, { total: records.length })
   })
 
   // GET /api/reports/inventory  — valorización de inventario
@@ -244,6 +243,6 @@ export default async function reportsRoutes(fastify) {
     const totalCost = parseFloat(items.reduce((s, i) => s + i.costTotal, 0).toFixed(2))
     const totalSell = parseFloat(items.reduce((s, i) => s + i.sellTotal, 0).toFixed(2))
 
-    return reply.send({ data: items, meta: { total: items.length, totalCost, totalSell } })
+    return sendOk(reply, items, { total: items.length, totalCost, totalSell })
   })
 }

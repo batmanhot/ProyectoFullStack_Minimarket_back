@@ -2,6 +2,7 @@ import { z }    from 'zod'
 import prisma    from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -54,14 +55,14 @@ export default async function quotationsRoutes(fastify) {
       prisma.quotation.count({ where }),
       prisma.quotation.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take }),
     ])
-    return reply.send({ data: rows.map(toDto), meta: { total, page: parseInt(page), limit: take } })
+    return sendOk(reply, rows.map(toDto), { total, page: parseInt(page), limit: take })
   })
 
   // GET /api/quotations/:id
   fastify.get('/quotations/:id', { preHandler: PRE }, async (req, reply) => {
     const q = await prisma.quotation.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!q) return reply.code(404).send({ error: 'Cotización no encontrada' })
-    return reply.send({ data: toDto(q) })
+    if (!q) return send404(reply, 'Cotización')
+    return sendOk(reply, toDto(q))
   })
 
   // POST /api/quotations
@@ -79,14 +80,14 @@ export default async function quotationsRoutes(fastify) {
         discount:    z.number().min(0).max(100).default(0),
       })).min(1),
       note:      z.string().default(''),
-      validDays: z.number().int().min(1).max(365).default(7),
+      validDays: z.number().int().min(1).max(365).default(QUOTATION.DEFAULT_VALID_DAYS),
       total:     z.number().min(0),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
-    const user   = req.user
-    const number = await nextQuotationNumber(req.tenantId)
+    const user     = req.user
+    const number   = await nextQuotationNumber(req.tenantId)
     const expiresAt = new Date(Date.now() + parsed.data.validDays * 86400_000)
 
     const q = await prisma.quotation.create({
@@ -104,14 +105,14 @@ export default async function quotationsRoutes(fastify) {
         userName:   user?.fullName || user?.username || '',
       },
     })
-    return reply.code(201).send({ data: toDto(q) })
+    return sendOk(reply, toDto(q), null, 201)
   })
 
   // PUT /api/quotations/:id — actualiza mientras esté en borrador
   fastify.put('/quotations/:id', { preHandler: PRE }, async (req, reply) => {
     const q = await prisma.quotation.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!q) return reply.code(404).send({ error: 'Cotización no encontrada' })
-    if (q.status !== 'borrador') return reply.code(409).send({ error: 'Solo se puede editar una cotización en estado "borrador"' })
+    if (!q) return send404(reply, 'Cotización')
+    if (q.status !== 'borrador') return send409(reply, 'Solo se puede editar una cotización en estado "borrador"')
 
     const schema = z.object({
       clientId:   z.string().optional(),
@@ -122,7 +123,7 @@ export default async function quotationsRoutes(fastify) {
       total:      z.number().min(0).optional(),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos' })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
     const updated = await prisma.quotation.update({
       where: { id: q.id },
@@ -132,7 +133,7 @@ export default async function quotationsRoutes(fastify) {
         updatedAt: new Date(),
       },
     })
-    return reply.send({ data: toDto(updated) })
+    return sendOk(reply, toDto(updated))
   })
 
   // PATCH /api/quotations/:id/status — transiciones de estado
@@ -140,23 +141,23 @@ export default async function quotationsRoutes(fastify) {
     const { status } = req.body || {}
     const validStatuses = ['borrador', 'enviada', 'aprobada', 'convertida', 'vencida']
     if (!validStatuses.includes(status)) {
-      return reply.code(400).send({ error: `Estado inválido. Use: ${validStatuses.join(' | ')}` })
+      return sendError(reply, `Estado inválido. Use: ${validStatuses.join(' | ')}`)
     }
     const q = await prisma.quotation.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!q) return reply.code(404).send({ error: 'Cotización no encontrada' })
+    if (!q) return send404(reply, 'Cotización')
 
     const updated = await prisma.quotation.update({ where: { id: q.id }, data: { status, updatedAt: new Date() } })
-    return reply.send({ data: toDto(updated) })
+    return sendOk(reply, toDto(updated))
   })
 
   // DELETE /api/quotations/:id — solo borradores
   fastify.delete('/quotations/:id', { preHandler: PRE }, async (req, reply) => {
     const q = await prisma.quotation.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!q) return reply.code(404).send({ error: 'Cotización no encontrada' })
+    if (!q) return send404(reply, 'Cotización')
     if (!['borrador', 'vencida'].includes(q.status)) {
-      return reply.code(409).send({ error: 'Solo se pueden eliminar cotizaciones en borrador o vencidas' })
+      return send409(reply, 'Solo se pueden eliminar cotizaciones en borrador o vencidas')
     }
     await prisma.quotation.delete({ where: { id: q.id } })
-    return reply.send({ data: { id: req.params.id, deleted: true } })
+    return sendOk(reply, { id: req.params.id, deleted: true })
   })
 }

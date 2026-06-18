@@ -2,6 +2,7 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -31,27 +32,27 @@ export default async function suppliersRoutes(fastify) {
       }),
     }
     const suppliers = await prisma.supplier.findMany({ where, orderBy: { name: 'asc' } })
-    return reply.send({ data: suppliers, meta: { total: suppliers.length } })
+    return sendOk(reply, suppliers, { total: suppliers.length })
   })
 
   fastify.post('/suppliers', { preHandler: PRE }, async (req, reply) => {
     const parsed = supplierSchema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
     const supplier = await prisma.supplier.create({ data: { ...parsed.data, tenantId: req.tenantId } })
-    return reply.code(201).send({ data: supplier })
+    return sendOk(reply, supplier, null, 201)
   })
 
   fastify.put('/suppliers/:id', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.supplier.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!existing) return reply.code(404).send({ error: 'Proveedor no encontrado' })
+    if (!existing) return send404(reply, 'Proveedor')
     const supplier = await prisma.supplier.update({ where: { id: req.params.id }, data: req.body })
-    return reply.send({ data: supplier })
+    return sendOk(reply, supplier)
   })
 
   fastify.delete('/suppliers/:id', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.supplier.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!existing) return reply.code(404).send({ error: 'Proveedor no encontrado' })
+    if (!existing) return send404(reply, 'Proveedor')
     await prisma.supplier.update({ where: { id: req.params.id }, data: { isActive: false } })
-    return reply.send({ data: { id: req.params.id, deleted: true } })
+    return sendOk(reply, { id: req.params.id, deleted: true })
   })
 }

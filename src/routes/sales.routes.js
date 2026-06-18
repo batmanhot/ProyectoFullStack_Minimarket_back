@@ -2,8 +2,10 @@ import { z }    from 'zod'
 import prisma    from '../db.js'
 import { requireAuth }    from '../middlewares/auth.js'
 import { resolveTenant }  from '../middlewares/tenant.js'
-import { allocateStock, restoreStock, calcPointsEarned } from '../services/inventory.service.js'
+import { allocateStock, restoreStock, calcPointsEarned, calcLoyaltyLevel } from '../services/inventory.service.js'
 import { nextInvoiceNumber } from '../utils/invoiceCounter.js'
+import { DISCOUNT } from '../config/businessRules.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
@@ -37,7 +39,7 @@ export default async function salesRoutes(fastify) {
       prisma.sale.count({ where }),
     ])
 
-    return reply.send({ data: sales, meta: { total } })
+    return sendOk(reply, sales, { total })
   })
 
   // GET /api/sales/:id
@@ -46,16 +48,30 @@ export default async function salesRoutes(fastify) {
       where:   { id: req.params.id, tenantId: req.tenantId },
       include: { items: { include: { batchAllocations: true } }, payments: true },
     })
-    if (!sale) return reply.code(404).send({ error: 'Venta no encontrada' })
-    return reply.send({ data: sale })
+    if (!sale) return send404(reply, 'Venta')
+    return sendOk(reply, sale)
   })
 
   // POST /api/sales
   fastify.post('/sales', { preHandler: PRE }, async (req, reply) => {
     const body = req.body
-    if (!body?.items?.length) return reply.code(400).send({ error: 'La venta debe tener al menos un ítem' })
+    if (!body?.items?.length) return sendError(reply, 'La venta debe tener al menos un ítem')
     if (!body?.payments?.length && (body?.total ?? 0) > 0) {
-      return reply.code(400).send({ error: 'La venta debe tener al menos un método de pago' })
+      return sendError(reply, 'La venta debe tener al menos un método de pago')
+    }
+
+    // ── Validar descuento máximo por ítem ────────────────────────────────────
+    // DISCOUNT.HARD_MAX_PCT es el límite absoluto del backend (100%).
+    // El límite por tenant (ej: 50%) lo valida el frontend; aquí solo bloqueamos
+    // payloads manipulados que intenten superar el máximo absoluto.
+    for (const item of body.items ?? []) {
+      if (!item.unitPrice || item.unitPrice <= 0) continue
+      const gross      = item.quantity * item.unitPrice
+      const discounted = (item.discount || 0) + (item.campaignDiscount || 0)
+      const pct        = gross > 0 ? (discounted / gross) * 100 : 0
+      if (pct > DISCOUNT.HARD_MAX_PCT) {
+        return sendError(reply, `El descuento de "${item.productName || 'un ítem'}" supera el máximo permitido (${DISCOUNT.HARD_MAX_PCT}%)`)
+      }
     }
 
     const tenantId = req.tenantId
@@ -73,7 +89,20 @@ export default async function salesRoutes(fastify) {
         : null
 
       // ── 3. Expandir bundles y procesar stock ─────────────────────────────
+      // Pre-fetch todos los productos no-bundle en una sola query
+      const nonBundleIds = body.items
+        .filter(i => !i.isBundle && i.stockControlUsed !== 'bundle' && i.type !== 'bundle')
+        .map(i => i.productId)
+
+      const productMap = new Map(
+        (await tx.product.findMany({
+          where:   { id: { in: nonBundleIds }, tenantId },
+          include: { batches: true },
+        })).map(p => [p.id, p])
+      )
+
       const enrichedItems = []
+      const saleMovements = []
 
       for (const item of body.items) {
         if (item.isBundle || item.stockControlUsed === 'bundle' || item.type === 'bundle') {
@@ -81,36 +110,33 @@ export default async function salesRoutes(fastify) {
           continue
         }
 
-        const product = await tx.product.findFirst({
-          where:   { id: item.productId, tenantId },
-          include: { batches: true },
-        })
+        const product = productMap.get(item.productId)
         if (!product) continue
 
         const { batchAllocations, stockControlUsed } = await allocateStock({
           product, item, invoiceNumber, userId,
         })
 
-        await tx.stockMovement.create({
-          data: {
-            tenantId,
-            productId:     item.productId,
-            productName:   item.productName || product.name,
-            variantId:     item.variantId || null,
-            type:          'salida',
-            quantity:      item.quantity,
-            previousStock: product.stock,
-            newStock:      Math.max(0, product.stock - item.quantity),
-            reason:        `Venta ${invoiceNumber}`,
-            invoiceNumber,
-            userId,
-            unitPrice:     item.unitPrice || 0,
-            totalSale:     HALF_UP((item.unitPrice || 0) * item.quantity),
-          },
+        saleMovements.push({
+          tenantId,
+          productId:     item.productId,
+          productName:   item.productName || product.name,
+          variantId:     item.variantId || null,
+          type:          'salida',
+          quantity:      item.quantity,
+          previousStock: product.stock,
+          newStock:      Math.max(0, product.stock - item.quantity),
+          reason:        `Venta ${invoiceNumber}`,
+          invoiceNumber,
+          userId,
+          unitPrice:     item.unitPrice || 0,
+          totalSale:     HALF_UP((item.unitPrice || 0) * item.quantity),
         })
 
         enrichedItems.push({ ...item, batchAllocations, stockControlUsed })
       }
+
+      if (saleMovements.length) await tx.stockMovement.createMany({ data: saleMovements })
 
       // ── 4. Crear la venta ────────────────────────────────────────────────
       const newSale = await tx.sale.create({
@@ -188,10 +214,7 @@ export default async function salesRoutes(fastify) {
         const pointsAfterEarn   = pointsAfterRedeem + (earned > 0 ? earned : 0)
         const newAccumulated    = (client.loyaltyAccumulated || 0) + Math.max(0, earned)
 
-        const level = newAccumulated >= 10000 ? 'platino'
-                    : newAccumulated >= 5000  ? 'oro'
-                    : newAccumulated >= 2000  ? 'plata'
-                    : 'bronce'
+        const level = calcLoyaltyLevel(newAccumulated)
 
         const transactions = []
         if (redeemedPoints > 0) {
@@ -228,7 +251,7 @@ export default async function salesRoutes(fastify) {
       return newSale
     })
 
-    return reply.code(201).send({ data: sale })
+    return sendOk(reply, sale, null, 201)
   })
 
   // PATCH /api/sales/:id/cancel
@@ -238,25 +261,36 @@ export default async function salesRoutes(fastify) {
       userId: z.string().optional(),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Se requiere motivo de cancelación' })
+    if (!parsed.success) return sendError(reply, 'Se requiere motivo de cancelación')
 
     const sale = await prisma.sale.findFirst({
       where:   { id: req.params.id, tenantId: req.tenantId },
       include: { items: { include: { batchAllocations: true } }, payments: true },
     })
-    if (!sale) return reply.code(404).send({ error: 'Venta no encontrada' })
-    if (sale.status !== 'completada') return reply.code(409).send({ error: 'Solo se pueden cancelar ventas completadas' })
+    if (!sale) return send404(reply, 'Venta')
+    if (sale.status !== 'completada') return send409(reply, 'Solo se pueden cancelar ventas completadas')
 
     await prisma.$transaction(async (tx) => {
 
       // ── 1. Restaurar stock ────────────────────────────────────────────────
+      // Pre-fetch todos los productos no-bundle en una sola query
+      const cancelItemIds = sale.items
+        .filter(i => !i.isBundle && i.stockControlUsed !== 'bundle')
+        .map(i => i.productId)
+
+      const cancelProductMap = new Map(
+        (await tx.product.findMany({
+          where:   { id: { in: cancelItemIds } },
+          include: { batches: true },
+        })).map(p => [p.id, p])
+      )
+
+      const cancelMovements = []
+
       for (const item of sale.items) {
         if (item.isBundle || item.stockControlUsed === 'bundle') continue
 
-        const product = await tx.product.findFirst({
-          where:   { id: item.productId },
-          include: { batches: true },
-        })
+        const product = cancelProductMap.get(item.productId)
         if (!product) continue
 
         await restoreStock({
@@ -269,22 +303,22 @@ export default async function salesRoutes(fastify) {
           },
         })
 
-        await tx.stockMovement.create({
-          data: {
-            tenantId:     req.tenantId,
-            productId:    item.productId,
-            productName:  item.productName,
-            variantId:    item.variantId || null,
-            type:         'entrada',
-            quantity:     item.quantity,
-            previousStock:product.stock,
-            newStock:     product.stock + item.quantity,
-            reason:       `Cancelación ${sale.invoiceNumber}`,
-            invoiceNumber:sale.invoiceNumber,
-            userId:       req.user.id,
-          },
+        cancelMovements.push({
+          tenantId:      req.tenantId,
+          productId:     item.productId,
+          productName:   item.productName,
+          variantId:     item.variantId || null,
+          type:          'entrada',
+          quantity:      item.quantity,
+          previousStock: product.stock,
+          newStock:      product.stock + item.quantity,
+          reason:        `Cancelación ${sale.invoiceNumber}`,
+          invoiceNumber: sale.invoiceNumber,
+          userId:        req.user.id,
         })
       }
+
+      if (cancelMovements.length) await tx.stockMovement.createMany({ data: cancelMovements })
 
       // ── 2. Revertir deuda a crédito ───────────────────────────────────────
       if (sale.clientId) {
@@ -310,10 +344,7 @@ export default async function salesRoutes(fastify) {
 
           const newPoints      = Math.max(0, (client.loyaltyPoints || 0) - earned + redeemed)
           const newAccumulated = Math.max(0, (client.loyaltyAccumulated || 0) - earned)
-          const newLevel       = newAccumulated >= 10000 ? 'platino'
-                               : newAccumulated >= 5000  ? 'oro'
-                               : newAccumulated >= 2000  ? 'plata'
-                               : 'bronce'
+          const newLevel       = calcLoyaltyLevel(newAccumulated)
 
           await tx.client.update({
             where: { id: sale.clientId },
@@ -390,6 +421,6 @@ export default async function salesRoutes(fastify) {
       })
     })
 
-    return reply.send({ data: { id: sale.id, status: 'cancelada' } })
+    return sendOk(reply, { id: sale.id, status: 'cancelada' })
   })
 }

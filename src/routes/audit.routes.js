@@ -1,6 +1,7 @@
 import prisma    from '../db.js'
 import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError } from '../utils/response.js'
 
 const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
@@ -37,13 +38,13 @@ export default async function auditRoutes(fastify) {
       prisma.auditLog.findMany({ where, orderBy: { createdAt: 'desc' }, skip, take }),
     ])
 
-    return reply.send({ data: logs, meta: { total, page: parseInt(page), limit: take } })
+    return sendOk(reply, logs, { total, page: parseInt(page), limit: take })
   })
 
   // POST /api/audit — persiste una entrada de auditoría desde el frontend
   fastify.post('/audit', { preHandler: [requireAuth, resolveTenant] }, async (req, reply) => {
     const { action, entity, entityId = '', detail = '' } = req.body || {}
-    if (!action || !entity) return reply.code(400).send({ error: 'action y entity son requeridos' })
+    if (!action || !entity) return sendError(reply, 'action y entity son requeridos')
 
     const user = req.user
     const log = await prisma.auditLog.create({
@@ -58,6 +59,6 @@ export default async function auditRoutes(fastify) {
         ip: req.ip || '',
       },
     })
-    return reply.code(201).send({ data: log })
+    return sendOk(reply, log, null, 201)
   })
 }

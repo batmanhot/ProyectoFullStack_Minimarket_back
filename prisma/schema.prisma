@@ -1,6 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Prisma Schema — Minimarket POS SaaS
+// Prisma Schema — Minimarket POS SaaS  v2.2
 // Estrategia multitenancy: row-level (tenantId en cada tabla)
+// Modelos: 38 (incluye ProductSerial, Location, ProductLocation, StockTransfer)
 // ─────────────────────────────────────────────────────────────────────────────
 
 generator client {
@@ -25,12 +26,12 @@ model Tenant {
   ownerName          String
   ownerEmail         String
   phone              String   @default("")
-  plan               String   @default("trial")     // trial | basic | pro | enterprise
-  billingCycle       String   @default("monthly")   // monthly | quarterly | semiannual | annual
+  plan               String   @default("trial")
+  billingCycle       String   @default("monthly")
   accessStartDate    DateTime @default(now())
   accessExpiresAt    DateTime
   isActive           Boolean  @default(true)
-  registrationSource String   @default("self-service") // self-service | superadmin
+  registrationSource String   @default("self-service")
   internalNotes      String   @default("")
   systemVersion      String   @default("1.0.0")
   emisorId           String   @default("")
@@ -56,7 +57,9 @@ model Tenant {
   counters       Counter[]
   mermaRecords   MermaRecord[]
   quotations     Quotation[]
-  stockReserves  StockReserve[]    // NUEVO: reservas multi-caja
+  stockReserves  StockReserve[]
+  locations      Location[]
+  stockTransfers StockTransfer[]
 
   @@map("tenants")
 }
@@ -83,7 +86,7 @@ model Renewal {
   tenantId         String
   plan             String
   billingCycle     String
-  startMode        String   @default("immediate") // immediate | expiry
+  startMode        String   @default("immediate")
   accessStartDate  DateTime
   accessExpiresAt  DateTime
   amount           Float    @default(0)
@@ -97,7 +100,7 @@ model Renewal {
 
 model PlanConfig {
   id              String   @id @default(uuid())
-  plan            String   @unique // trial | basic | pro | enterprise
+  plan            String   @unique
   priceMonthly    Float    @default(0)
   priceQuarterly  Float    @default(0)
   priceSemiannual Float    @default(0)
@@ -147,18 +150,19 @@ model User {
   fullName     String
   username     String
   passwordHash String
-  role         String   @default("cajero") // admin | gerente | supervisor | cajero
+  role         String   @default("cajero")
   email        String   @default("")
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  sales         Sale[]
-  purchases     Purchase[]
-  sessions      CashSession[]
-  auditLogs     AuditLog[]
-  stockReserves StockReserve[] // NUEVO: reservas que creó este usuario
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sales          Sale[]
+  purchases      Purchase[]
+  sessions       CashSession[]
+  auditLogs      AuditLog[]
+  stockReserves  StockReserve[]
+  stockTransfers StockTransfer[]
 
   @@unique([tenantId, username])
   @@map("users")
@@ -218,7 +222,7 @@ model Product {
   brandId      String   @default("")
   supplierId   String   @default("")
   description  String   @default("")
-  type         String   @default("normal")  // normal | bundle | service
+  type         String   @default("normal")
   priceSell    Float    @default(0)
   priceBuy     Float    @default(0)
   margin       Float    @default(0)
@@ -246,7 +250,10 @@ model Product {
   returnItems       ReturnItem[]
   stockMovements    StockMovement[]
   mermaRecords      MermaRecord[]
-  stockReserveItems StockReserveItem[] // NUEVO: ítems reservados de este producto
+  stockReserveItems StockReserveItem[]
+  serials           ProductSerial[]
+  productLocations  ProductLocation[]
+  stockTransfers    StockTransfer[]
 
   @@unique([tenantId, barcode])
   @@map("products")
@@ -260,7 +267,7 @@ model ProductBatch {
   quantity   Float     @default(0)
   priceBuy   Float     @default(0)
   notes      String    @default("")
-  status     String    @default("activo") // activo | agotado | merma | vencido
+  status     String    @default("activo")
   createdAt  DateTime  @default(now())
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -300,13 +307,40 @@ model BundleComponent {
   @@map("bundle_components")
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// NÚMEROS DE SERIE
+// Para productos con stockControl = 'serie'.
+// Cada unidad física tiene un serial único por tenant (@@unique).
+// Al venderse: status → vendido + saleId + invoiceNumber.
+// Al devolver: status → disponible nuevamente.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model ProductSerial {
+  id            String    @id @default(uuid())
+  tenantId      String
+  productId     String
+  serialNumber  String
+  status        String    @default("disponible") // disponible | vendido | reservado | dado_baja
+  saleId        String    @default("")
+  invoiceNumber String    @default("")
+  soldAt        DateTime?
+  notes         String    @default("")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, serialNumber])
+  @@map("product_serials")
+}
+
 model StockMovement {
   id            String   @id @default(uuid())
   tenantId      String
   productId     String
   productName   String
   variantId     String?
-  type          String   // entrada | salida
+  type          String
   quantity      Float
   previousStock Float
   newStock      Float
@@ -326,9 +360,6 @@ model StockMovement {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RESERVA DE STOCK MULTI-CAJA
-// TTL = 10 minutos. Se elimina al completar/cancelar venta o al expirar.
-// Garantiza que dos cajeros simultáneos no vendan el mismo stock.
-// Stock disponible = product.stock − SUM(reservas activas de OTROS cajeros)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model StockReserve {
@@ -367,7 +398,7 @@ model Client {
   id                 String   @id @default(uuid())
   tenantId           String
   name               String
-  documentType       String   @default("DNI") // DNI | RUC | Pasaporte | CE
+  documentType       String   @default("DNI")
   documentNumber     String
   email              String   @default("")
   phone              String   @default("")
@@ -393,7 +424,7 @@ model Client {
 model LoyaltyTransaction {
   id            String   @id @default(uuid())
   clientId      String
-  type          String   // earn | redeem
+  type          String
   points        Int
   discount      Float    @default(0)
   saleId        String   @default("")
@@ -415,7 +446,7 @@ model Sale {
   id                String    @id @default(uuid())
   tenantId          String
   invoiceNumber     String
-  tipoComprobante   String    @default("ticket") // ticket | boleta | factura
+  tipoComprobante   String    @default("ticket")
   clientId          String?
   clientName        String    @default("")
   clientDocument    String    @default("")
@@ -427,12 +458,12 @@ model Sale {
   igv               Float     @default(0)
   total             Float
   redeemedPoints    Int       @default(0)
-  status            String    @default("completada") // completada | cancelada
+  status            String    @default("completada")
   cancelReason      String    @default("")
   cancelledAt       DateTime?
   comprobanteId     String    @default("")
   comprobanteNumero String    @default("")
-  sunatStatus       String    @default("no-aplica") // no-aplica | pendiente | emitido | error
+  sunatStatus       String    @default("no-aplica")
   comprobanteError  String    @default("")
   createdAt         DateTime  @default(now())
 
@@ -465,8 +496,8 @@ model SaleItem {
   fromBundle       String  @default("")
   bundleName       String  @default("")
 
-  sale             Sale           @relation(fields: [saleId],     references: [id], onDelete: Cascade)
-  product          Product        @relation(fields: [productId],  references: [id])
+  sale             Sale            @relation(fields: [saleId],    references: [id], onDelete: Cascade)
+  product          Product         @relation(fields: [productId], references: [id])
   batchAllocations SaleItemBatch[]
 
   @@map("sale_items")
@@ -488,7 +519,7 @@ model SaleItemBatch {
 model SalePayment {
   id        String @id @default(uuid())
   saleId    String
-  method    String // efectivo | yape | plin | tarjeta | qr | transferencia | link | credito
+  method    String
   amount    Float
   reference String @default("")
 
@@ -505,7 +536,7 @@ model CashSession {
   id                 String    @id @default(uuid())
   tenantId           String
   userId             String
-  status             String    @default("abierta") // abierta | cerrada
+  status             String    @default("abierta")
   openingAmount      Float     @default(0)
   openedAt           DateTime  @default(now())
   closedAt           DateTime?
@@ -552,7 +583,7 @@ model Purchase {
   tenantId     String
   supplierId   String?
   supplierName String   @default("")
-  status       String   @default("confirmada") // confirmada | recibida | anulada
+  status       String   @default("confirmada")
   total        Float    @default(0)
   userId       String
   notes        String   @default("")
@@ -596,15 +627,15 @@ model Return {
   clientName      String    @default("")
   userId          String
   userName        String    @default("")
-  reason          String    // anulacion | defecto | devolucion
+  reason          String
   reasonLabel     String
   reasonNote      String    @default("")
   totalRefund     Float
   baseImponible   Float     @default(0)
   igv             Float     @default(0)
   igvRate         Float     @default(0.18)
-  status          String    @default("completada") // completada | anulada
-  sunatStatus     String    @default("pendiente")  // pendiente | emitido | error
+  status          String    @default("completada")
+  sunatStatus     String    @default("pendiente")
   anulatedAt      DateTime?
   anulationReason String    @default("")
   createdAt       DateTime  @default(now())
@@ -648,12 +679,12 @@ model DiscountCampaign {
   id             String   @id @default(uuid())
   tenantId       String
   name           String
-  type           String   // porcentaje | monto_fijo | compra_lleva | bogo
+  type           String
   discount       Float    @default(0)
   discountAmount Float    @default(0)
   minAmount      Float    @default(0)
   maxDiscount    Float    @default(0)
-  applicableTo   String   @default("todos") // todos | categoria | producto
+  applicableTo   String   @default("todos")
   productIds     String[] @default([])
   categoryIds    String[] @default([])
   validFrom      DateTime
@@ -689,13 +720,13 @@ model DiscountTicket {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONTADORES DE COMPROBANTE POR TENANT
+// CONTADORES DE COMPROBANTE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 model Counter {
   id       String @id @default(uuid())
   tenantId String
-  type     String // ticket | boleta | factura | nc
+  type     String
   current  Int    @default(0)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -713,7 +744,7 @@ model AuditLog {
   tenantId  String
   userId    String
   userName  String   @default("")
-  action    String   // CREATE | UPDATE | DELETE | CANCEL | LOGIN | LOGOUT | EXPORT
+  action    String
   entity    String
   entityId  String   @default("")
   detail    String   @default("")
@@ -738,8 +769,8 @@ model MermaRecord {
   batchId     String   @default("")
   quantity    Float
   unit        String   @default("unidad")
-  reason      String   // vencido | dañado | hurto | otro
-  status      String   @default("en_merma") // en_merma | devuelto | repuesto
+  reason      String
+  status      String   @default("en_merma")
   notes       String   @default("")
   costUnit    Float    @default(0)
   userId      String   @default("")
@@ -751,6 +782,68 @@ model MermaRecord {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@map("merma_records")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UBICACIONES FÍSICAS (Almacén / Góndola / Mostrador / Bodega)
+// Reemplaza product.location (texto libre) con FK real.
+// ProductLocation: stock de un producto en una ubicación específica.
+// StockTransfer:   movimiento de stock entre ubicaciones.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+model Location {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String   @default("")
+  type        String   @default("almacen") // almacen | gondola | mostrador | bodega | otro
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant             Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  stockTransfersFrom StockTransfer[]   @relation("TransferFrom")
+  stockTransfersTo   StockTransfer[]   @relation("TransferTo")
+  productLocations   ProductLocation[]
+
+  @@unique([tenantId, name])
+  @@map("locations")
+}
+
+model ProductLocation {
+  id         String @id @default(uuid())
+  productId  String
+  locationId String
+  tenantId   String
+  stock      Float  @default(0)
+
+  product  Product  @relation(fields: [productId],  references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, locationId])
+  @@map("product_locations")
+}
+
+model StockTransfer {
+  id           String   @id @default(uuid())
+  tenantId     String
+  fromId       String
+  toId         String
+  productId    String
+  productName  String
+  quantity     Float
+  reason       String   @default("")
+  userId       String
+  status       String   @default("completada") // completada | anulada
+  createdAt    DateTime @default(now())
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  from    Location @relation("TransferFrom", fields: [fromId],    references: [id])
+  to      Location @relation("TransferTo",   fields: [toId],      references: [id])
+  product Product  @relation(fields: [productId], references: [id])
+  user    User     @relation(fields: [userId],    references: [id])
+
+  @@map("stock_transfers")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -768,7 +861,7 @@ model Quotation {
   validDays  Int      @default(7)
   expiresAt  DateTime
   total      Float    @default(0)
-  status     String   @default("borrador") // borrador | enviada | aprobada | convertida | vencida
+  status     String   @default("borrador")
   saleId     String?
   userId     String   @default("")
   userName   String   @default("")

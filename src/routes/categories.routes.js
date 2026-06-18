@@ -2,6 +2,7 @@ import { z }    from 'zod'
 import prisma    from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -19,7 +20,7 @@ export default async function categoriesRoutes(fastify) {
       ...(search && { name: { contains: search, mode: 'insensitive' } }),
     }
     const cats = await prisma.category.findMany({ where, orderBy: { name: 'asc' } })
-    return reply.send({ data: cats.map(toDto), meta: { total: cats.length } })
+    return sendOk(reply, cats.map(toDto), { total: cats.length })
   })
 
   // POST /api/categories
@@ -32,15 +33,15 @@ export default async function categoriesRoutes(fastify) {
       icon:        z.string().default(''),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
     // Generar slug desde el nombre si no viene del frontend
     let slug = parsed.data.slug || parsed.data.name.toLowerCase()
-      .normalize('NFD').replace(/[̀-ͯ]/g, '') // quitar tildes
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
 
-    // Si el slug ya existe, agregarle sufijo numérico
+    // Si el slug ya existe, agregar sufijo numérico
     let attempts = 0
     while (await prisma.category.findUnique({ where: { tenantId_slug: { tenantId: req.tenantId, slug } } })) {
       attempts++
@@ -48,7 +49,7 @@ export default async function categoriesRoutes(fastify) {
     }
 
     const cat = await prisma.category.create({ data: { ...parsed.data, slug, tenantId: req.tenantId } })
-    return reply.code(201).send({ data: toDto(cat) })
+    return sendOk(reply, toDto(cat), null, 201)
   })
 
   // PUT /api/categories/:slug
@@ -61,24 +62,24 @@ export default async function categoriesRoutes(fastify) {
       isActive:    z.boolean().optional(),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos' })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
     const cat = await prisma.category.findUnique({ where: { tenantId_slug: { tenantId: req.tenantId, slug: req.params.slug } } })
-    if (!cat) return reply.code(404).send({ error: 'Categoría no encontrada' })
+    if (!cat) return send404(reply, 'Categoría')
 
     const updated = await prisma.category.update({ where: { id: cat.id }, data: { ...parsed.data, updatedAt: new Date() } })
-    return reply.send({ data: toDto(updated) })
+    return sendOk(reply, toDto(updated))
   })
 
   // DELETE /api/categories/:slug
   fastify.delete('/categories/:slug', { preHandler: PRE }, async (req, reply) => {
     const cat = await prisma.category.findUnique({ where: { tenantId_slug: { tenantId: req.tenantId, slug: req.params.slug } } })
-    if (!cat) return reply.code(404).send({ error: 'Categoría no encontrada' })
+    if (!cat) return send404(reply, 'Categoría')
 
     const inUse = await prisma.product.count({ where: { tenantId: req.tenantId, categoryId: req.params.slug, isActive: true } })
-    if (inUse > 0) return reply.code(409).send({ error: `No se puede eliminar: ${inUse} producto(s) usan esta categoría` })
+    if (inUse > 0) return send409(reply, `No se puede eliminar: ${inUse} producto(s) usan esta categoría`)
 
     await prisma.category.delete({ where: { id: cat.id } })
-    return reply.send({ data: { slug: req.params.slug, deleted: true } })
+    return sendOk(reply, { slug: req.params.slug, deleted: true })
   })
 }

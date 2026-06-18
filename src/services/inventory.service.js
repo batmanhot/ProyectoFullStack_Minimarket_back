@@ -3,6 +3,7 @@
 // Retorna las actualizaciones a aplicar en la DB (no las aplica directamente).
 
 import prisma from '../db.js'
+import { LOYALTY } from '../config/businessRules.js'
 
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
 
@@ -118,8 +119,21 @@ export async function restoreStock({ product, item }) {
   })
 }
 
-// ── Calcula puntos de lealtad ganados ────────────────────────────────────────
+// ── Calcula puntos de lealtad ganados ─────────────────────────────────────────
+// Política: floor(total / POINTS_DIVISOR) × multiplicador por nivel.
+// Los niveles y multiplicadores coinciden con LoyaltyEngine.js del frontend.
 export function calcPointsEarned(total, accumulated) {
-  const rate = accumulated >= 5000 ? 2 : accumulated >= 2000 ? 1.5 : 1
-  return Math.floor((total / 10) * rate)
+  const rate = accumulated >= LOYALTY.LEVEL_PLATINO ? LOYALTY.RATE_PLATINO
+             : accumulated >= LOYALTY.LEVEL_ORO     ? LOYALTY.RATE_ORO
+             : accumulated >= LOYALTY.LEVEL_PLATA   ? LOYALTY.RATE_PLATA
+             : LOYALTY.RATE_BRONCE
+  return Math.floor(Math.floor(total / LOYALTY.POINTS_DIVISOR) * rate)
+}
+
+// ── Calcula el nivel de lealtad según puntos acumulados históricos ────────────
+export function calcLoyaltyLevel(accumulated) {
+  if (accumulated >= LOYALTY.LEVEL_PLATINO) return LOYALTY.LEVELS.PLATINO
+  if (accumulated >= LOYALTY.LEVEL_ORO)     return LOYALTY.LEVELS.ORO
+  if (accumulated >= LOYALTY.LEVEL_PLATA)   return LOYALTY.LEVELS.PLATA
+  return LOYALTY.LEVELS.BRONCE
 }

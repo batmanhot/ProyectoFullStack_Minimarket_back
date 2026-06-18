@@ -2,6 +2,7 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -49,7 +50,7 @@ export default async function campaignsRoutes(fastify) {
     const campaigns = await prisma.discountCampaign.findMany({
       where, orderBy: { createdAt: 'desc' },
     })
-    return reply.send({ data: campaigns, meta: { total: campaigns.length } })
+    return sendOk(reply, campaigns, { total: campaigns.length })
   })
 
   fastify.post('/campaigns', { preHandler: PRE }, async (req, reply) => {
@@ -64,7 +65,7 @@ export default async function campaignsRoutes(fastify) {
         validTo:   new Date(parsed.data.validTo),
       },
     })
-    return reply.code(201).send({ data: campaign })
+    return sendOk(reply, campaign, null, 201)
   })
 
   // FIX: usar campaignUpdateSchema con whitelist para evitar campos no permitidos en Prisma
@@ -72,7 +73,7 @@ export default async function campaignsRoutes(fastify) {
     const existing = await prisma.discountCampaign.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!existing) return reply.code(404).send({ error: 'Campaña no encontrada' })
+    if (!existing) return send404(reply, 'Campaña')
 
     const parsed = campaignUpdateSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
@@ -85,29 +86,29 @@ export default async function campaignsRoutes(fastify) {
       where: { id: req.params.id },
       data:  updateData,
     })
-    return reply.send({ data: campaign })
+    return sendOk(reply, campaign)
   })
 
   fastify.patch('/campaigns/:id/toggle', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.discountCampaign.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!existing) return reply.code(404).send({ error: 'Campaña no encontrada' })
+    if (!existing) return send404(reply, 'Campaña')
 
     const campaign = await prisma.discountCampaign.update({
       where: { id: req.params.id },
       data:  { isActive: req.body?.isActive ?? !existing.isActive },
     })
-    return reply.send({ data: { id: campaign.id, isActive: campaign.isActive } })
+    return sendOk(reply, { id: campaign.id, isActive: campaign.isActive })
   })
 
   fastify.delete('/campaigns/:id', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.discountCampaign.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!existing) return reply.code(404).send({ error: 'Campaña no encontrada' })
+    if (!existing) return send404(reply, 'Campaña')
 
     await prisma.discountCampaign.delete({ where: { id: req.params.id } })
-    return reply.send({ data: { id: req.params.id, deleted: true } })
+    return sendOk(reply, { id: req.params.id, deleted: true })
   })
 }

@@ -1,6 +1,7 @@
 import prisma    from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -93,30 +94,28 @@ export default async function dashboardRoutes(fastify) {
       }
     })
 
-    return reply.send({
-      data: {
-        ventas: {
-          hoy: { count: salesToday._count,  total: parseFloat((salesToday._sum.total  || 0).toFixed(2)) },
-          mes: { count: salesMonth._count,  total: parseFloat((salesMonth._sum.total  || 0).toFixed(2)) },
-        },
-        devoluciones: {
-          hoy: { count: returnsToday._count, total: parseFloat((returnsToday._sum.totalRefund || 0).toFixed(2)) },
-        },
-        clientes:  { total: clientsTotal, conDeuda: clientsWithDebt },
-        productos: { total: productsTotal, sinStock: lowStock, porVencer: nearExpiry },
-        // FIX: usar openingAmount en la respuesta, mantener alias openAmount para compatibilidad frontend
-        caja: activeCash
-          ? {
-              activa:        true,
-              id:            activeCash.id,
-              openingAmount: activeCash.openingAmount,
-              openAmount:    activeCash.openingAmount,  // alias para compatibilidad frontend
-              openedAt:      activeCash.openedAt,
-            }
-          : { activa: false },
-        merma:        { mes: mermaMonth },
-        ultimasVentas,
+    return sendOk(reply, {
+      ventas: {
+        hoy: { count: salesToday._count,  total: parseFloat((salesToday._sum.total  || 0).toFixed(2)) },
+        mes: { count: salesMonth._count,  total: parseFloat((salesMonth._sum.total  || 0).toFixed(2)) },
       },
+      devoluciones: {
+        hoy: { count: returnsToday._count, total: parseFloat((returnsToday._sum.totalRefund || 0).toFixed(2)) },
+      },
+      clientes:  { total: clientsTotal, conDeuda: clientsWithDebt },
+      productos: { total: productsTotal, sinStock: lowStock, porVencer: nearExpiry },
+      // FIX: usar openingAmount en la respuesta, mantener alias openAmount para compatibilidad frontend
+      caja: activeCash
+        ? {
+            activa:        true,
+            id:            activeCash.id,
+            openingAmount: activeCash.openingAmount,
+            openAmount:    activeCash.openingAmount,  // alias para compatibilidad frontend
+            openedAt:      activeCash.openedAt,
+          }
+        : { activa: false },
+      merma:        { mes: mermaMonth },
+      ultimasVentas,
     })
   })
 }

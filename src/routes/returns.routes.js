@@ -4,6 +4,7 @@ import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { restoreStock }  from '../services/inventory.service.js'
 import { nextInvoiceNumber } from '../utils/invoiceCounter.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
@@ -28,7 +29,7 @@ export default async function returnsRoutes(fastify) {
       }),
       prisma.return.count({ where }),
     ])
-    return reply.send({ data: returns, meta: { total } })
+    return sendOk(reply, returns, { total })
   })
 
   fastify.get('/returns/:id', { preHandler: PRE }, async (req, reply) => {
@@ -36,8 +37,8 @@ export default async function returnsRoutes(fastify) {
       where:   { id: req.params.id, tenantId: req.tenantId },
       include: { items: true },
     })
-    if (!ret) return reply.code(404).send({ error: 'Devolución no encontrada' })
-    return reply.send({ data: ret })
+    if (!ret) return send404(reply, 'Devolución')
+    return sendOk(reply, ret)
   })
 
   fastify.post('/returns', { preHandler: PRE }, async (req, reply) => {
@@ -69,7 +70,7 @@ export default async function returnsRoutes(fastify) {
       })).min(1),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
     const d = parsed.data
 
     const igvRate       = d.igvRate
@@ -82,39 +83,39 @@ export default async function returnsRoutes(fastify) {
 
       const newReturn = await tx.return.create({
         data: {
-          tenantId:       req.tenantId,
+          tenantId:        req.tenantId,
           ncNumber,
-          saleId:         d.saleId || null,
-          invoiceNumber:  d.invoiceNumber,
-          tipoComprobante:d.tipoComprobante,
-          clientId:       d.clientId || null,
-          clientName:     d.clientName,
-          userId:         req.user.id,
-          userName:       req.user.fullName || '',
-          reason:         d.reason,
-          reasonLabel:    d.reasonLabel,
-          reasonNote:     d.reasonNote,
+          saleId:          d.saleId || null,
+          invoiceNumber:   d.invoiceNumber,
+          tipoComprobante: d.tipoComprobante,
+          clientId:        d.clientId || null,
+          clientName:      d.clientName,
+          userId:          req.user.id,
+          userName:        req.user.fullName || '',
+          reason:          d.reason,
+          reasonLabel:     d.reasonLabel,
+          reasonNote:      d.reasonNote,
           totalRefund,
           baseImponible,
           igv,
           igvRate,
-          status:         'completada',
-          sunatStatus:    'pendiente',
+          status:          'completada',
+          sunatStatus:     'pendiente',
           items: {
             create: d.items.map(i => ({
-              saleItemId:  i.saleItemId || '',
-              productId:   i.productId,
-              productName: i.productName,
-              barcode:     i.barcode,
-              quantity:    i.quantity,
-              unitPrice:   i.unitPrice,
-              netUnitPrice:i.netUnitPrice,
-              discount:    i.discount,
-              totalRefund: i.totalRefund,
-              unit:        i.unit,
-              batchId:     i.batchId,
-              batchNumber: i.batchNumber,
-              expiryDate:  i.expiryDate,
+              saleItemId:   i.saleItemId || '',
+              productId:    i.productId,
+              productName:  i.productName,
+              barcode:      i.barcode,
+              quantity:     i.quantity,
+              unitPrice:    i.unitPrice,
+              netUnitPrice: i.netUnitPrice,
+              discount:     i.discount,
+              totalRefund:  i.totalRefund,
+              unit:         i.unit,
+              batchId:      i.batchId,
+              batchNumber:  i.batchNumber,
+              expiryDate:   i.expiryDate,
             })),
           },
         },
@@ -145,16 +146,16 @@ export default async function returnsRoutes(fastify) {
 
         await tx.stockMovement.create({
           data: {
-            tenantId:     req.tenantId,
-            productId:    product.id,
-            productName:  product.name,
-            type:         'entrada',
-            quantity:     item.quantity,
-            previousStock:prevStock,
-            newStock:     prevStock + item.quantity,
-            reason:       `Devolución ${ncNumber}`,
-            invoiceNumber:d.invoiceNumber,
-            userId:       req.user.id,
+            tenantId:      req.tenantId,
+            productId:     product.id,
+            productName:   product.name,
+            type:          'entrada',
+            quantity:      item.quantity,
+            previousStock: prevStock,
+            newStock:      prevStock + item.quantity,
+            reason:        `Devolución ${ncNumber}`,
+            invoiceNumber: d.invoiceNumber,
+            userId:        req.user.id,
           },
         })
       }
@@ -166,8 +167,8 @@ export default async function returnsRoutes(fastify) {
         })
         const creditPmt = origSale?.payments?.find(p => p.method === 'credito')
         if (creditPmt) {
-          const refundPct = totalRefund / (origSale?.total || 1)
-          const debtReduction = HALF_UP(creditPmt.amount * refundPct)
+          const refundPct      = totalRefund / (origSale?.total || 1)
+          const debtReduction  = HALF_UP(creditPmt.amount * refundPct)
           await tx.client.update({
             where: { id: d.clientId },
             data:  { currentDebt: { decrement: debtReduction } },
@@ -191,23 +192,23 @@ export default async function returnsRoutes(fastify) {
       return newReturn
     })
 
-    return reply.code(201).send({ data: ret })
+    return sendOk(reply, ret, null, 201)
   })
 
   // PATCH /api/returns/:id/anular
   fastify.patch('/returns/:id/anular', { preHandler: PRE }, async (req, reply) => {
     const schema = z.object({ motivo: z.string().min(1) })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Se requiere motivo de anulación' })
+    if (!parsed.success) return sendError(reply, 'Se requiere motivo de anulación')
 
     const ret = await prisma.return.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!ret) return reply.code(404).send({ error: 'Devolución no encontrada' })
-    if (ret.status === 'anulada') return reply.code(409).send({ error: 'Esta devolución ya está anulada' })
+    if (!ret) return send404(reply, 'Devolución')
+    if (ret.status === 'anulada') return send409(reply, 'Esta devolución ya está anulada')
 
     const updated = await prisma.return.update({
       where: { id: ret.id },
       data:  { status: 'anulada', anulatedAt: new Date(), anulationReason: parsed.data.motivo },
     })
-    return reply.send({ data: { id: updated.id, status: updated.status } })
+    return sendOk(reply, { id: updated.id, status: updated.status })
   })
 }

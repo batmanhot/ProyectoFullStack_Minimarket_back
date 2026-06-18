@@ -2,6 +2,7 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE       = [requireAuth, resolveTenant]
 const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
@@ -46,7 +47,7 @@ export default async function usersRoutes(fastify) {
         email: true, isActive: true, createdAt: true, updatedAt: true,
       },
     })
-    return reply.send({ data: users, meta: { total: users.length } })
+    return sendOk(reply, users, { total: users.length })
   })
 
   // GET /api/users/:id
@@ -58,8 +59,8 @@ export default async function usersRoutes(fastify) {
         email: true, isActive: true, createdAt: true, updatedAt: true,
       },
     })
-    if (!user) return reply.code(404).send({ error: 'Usuario no encontrado' })
-    return reply.send({ data: user })
+    if (!user) return send404(reply, 'Usuario')
+    return sendOk(reply, user)
   })
 
   // POST /api/users  — solo admin/gerente puede crear usuarios
@@ -71,7 +72,7 @@ export default async function usersRoutes(fastify) {
     const existing = await prisma.user.findUnique({
       where: { tenantId_username: { tenantId: req.tenantId, username: d.username } },
     })
-    if (existing) return reply.code(409).send({ error: `El usuario "${d.username}" ya existe en este negocio` })
+    if (existing) return send409(reply, `El usuario "${d.username}" ya existe en este negocio`)
 
     const { default: bcrypt } = await import('bcryptjs')
     const passwordHash = await bcrypt.hash(d.password, 10)
@@ -90,7 +91,7 @@ export default async function usersRoutes(fastify) {
         email: true, isActive: true, createdAt: true,
       },
     })
-    return reply.code(201).send({ data: user })
+    return sendOk(reply, user, null, 201)
   })
 
   // PUT /api/users/:id  — actualizar datos del usuario (no contraseña)
@@ -98,7 +99,7 @@ export default async function usersRoutes(fastify) {
     const existing = await prisma.user.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!existing) return reply.code(404).send({ error: 'Usuario no encontrado' })
+    if (!existing) return send404(reply, 'Usuario')
 
     const parsed = userUpdateSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
@@ -110,7 +111,7 @@ export default async function usersRoutes(fastify) {
           where: { tenantId: req.tenantId, role: 'admin', isActive: true, id: { not: existing.id } },
         })
         if (adminCount === 0) {
-          return reply.code(409).send({ error: 'No se puede modificar el único administrador activo' })
+          return send409(reply, 'No se puede modificar el único administrador activo')
         }
       }
     }
@@ -123,7 +124,7 @@ export default async function usersRoutes(fastify) {
         email: true, isActive: true, updatedAt: true,
       },
     })
-    return reply.send({ data: user })
+    return sendOk(reply, user)
   })
 
   // PATCH /api/users/:id/password  — cambiar contraseña
@@ -133,12 +134,12 @@ export default async function usersRoutes(fastify) {
       newPassword:     z.string().min(6),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'La nueva contraseña debe tener al menos 6 caracteres' })
+    if (!parsed.success) return sendError(reply, 'La nueva contraseña debe tener al menos 6 caracteres')
 
     const target = await prisma.user.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!target) return reply.code(404).send({ error: 'Usuario no encontrado' })
+    if (!target) return send404(reply, 'Usuario')
 
     const isSelf  = req.user.id === target.id
     const isAdmin = ['admin', 'gerente'].includes(req.user.role)
@@ -148,16 +149,16 @@ export default async function usersRoutes(fastify) {
     if (isSelf && !isAdmin && parsed.data.currentPassword) {
       const { default: bcrypt } = await import('bcryptjs')
       const valid = await bcrypt.compare(parsed.data.currentPassword, target.passwordHash)
-      if (!valid) return reply.code(401).send({ error: 'La contraseña actual es incorrecta' })
+      if (!valid) return sendError(reply, 'La contraseña actual es incorrecta', 401)
     } else if (!isSelf && !isAdmin) {
-      return reply.code(403).send({ error: 'No tienes permiso para cambiar la contraseña de otro usuario' })
+      return sendError(reply, 'No tienes permiso para cambiar la contraseña de otro usuario', 403)
     }
 
     const { default: bcrypt } = await import('bcryptjs')
     const passwordHash = await bcrypt.hash(parsed.data.newPassword, 10)
     await prisma.user.update({ where: { id: target.id }, data: { passwordHash } })
 
-    return reply.send({ data: { id: target.id, message: 'Contraseña actualizada' } })
+    return sendOk(reply, { id: target.id, message: 'Contraseña actualizada' })
   })
 
   // DELETE /api/users/:id  — soft delete (isActive: false)
@@ -165,25 +166,25 @@ export default async function usersRoutes(fastify) {
     const existing = await prisma.user.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
-    if (!existing) return reply.code(404).send({ error: 'Usuario no encontrado' })
-    if (req.user.id === existing.id) return reply.code(409).send({ error: 'No puedes eliminar tu propia cuenta' })
+    if (!existing) return send404(reply, 'Usuario')
+    if (req.user.id === existing.id) return send409(reply, 'No puedes eliminar tu propia cuenta')
 
     if (existing.role === 'admin') {
       const adminCount = await prisma.user.count({
         where: { tenantId: req.tenantId, role: 'admin', isActive: true, id: { not: existing.id } },
       })
       if (adminCount === 0) {
-        return reply.code(409).send({ error: 'No se puede eliminar el único administrador activo' })
+        return send409(reply, 'No se puede eliminar el único administrador activo')
       }
     }
 
     await prisma.user.update({ where: { id: existing.id }, data: { isActive: false } })
-    return reply.send({ data: { id: existing.id, deleted: true } })
+    return sendOk(reply, { id: existing.id, deleted: true })
   })
 
   // GET /api/admin/users  — SuperAdmin: ver usuarios de cualquier tenant
   fastify.get('/admin/users', { preHandler: [requireAuth] }, async (req, reply) => {
-    if (req.user.role !== 'superadmin') return reply.code(403).send({ error: 'Solo superadmin' })
+    if (req.user.role !== 'superadmin') return sendError(reply, 'Solo superadmin', 403)
     const { tenantId, search, page = '1', limit = '50' } = req.query
     const skip = (parseInt(page) - 1) * parseInt(limit)
     const where = {
@@ -207,6 +208,6 @@ export default async function usersRoutes(fastify) {
       }),
       prisma.user.count({ where }),
     ])
-    return reply.send({ data: users, meta: { total } })
+    return sendOk(reply, users, { total })
   })
 }

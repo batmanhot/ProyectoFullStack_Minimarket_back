@@ -20,6 +20,7 @@ import { z }           from 'zod'
 import prisma          from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, send404 } from '../utils/response.js'
 
 const PRE      = [requireAuth, resolveTenant]
 const TTL_MS   = 10 * 60 * 1000   // 10 minutos
@@ -112,7 +113,7 @@ export default async function stockReserveRoutes(fastify) {
         where: { id: reserveId, tenantId },
       })
       if (!existing) {
-        return reply.code(404).send({ error: 'Reserva no encontrada' })
+        return send404(reply, 'Reserva')
       }
 
       // Eliminar ítems anteriores y reemplazar
@@ -131,7 +132,7 @@ export default async function stockReserveRoutes(fastify) {
         where:   { id: reserveId },
         include: { items: true },
       })
-      return reply.send({ data: reserve })
+      return sendOk(reply, reserve)
     }
 
     // Crear reserva nueva
@@ -145,7 +146,7 @@ export default async function stockReserveRoutes(fastify) {
       include: { items: true },
     })
 
-    return reply.code(201).send({ data: reserve })
+    return sendOk(reply, reserve, null, 201)
   })
 
   // DELETE /api/stock-reserve/:id — libera la reserva (cancelar carrito o venta completada)
@@ -155,11 +156,11 @@ export default async function stockReserveRoutes(fastify) {
     })
     if (!reserve) {
       // Si ya no existe (expiró o fue eliminada), responder OK igualmente
-      return reply.send({ data: { id: req.params.id, released: true } })
+      return sendOk(reply, { id: req.params.id, released: true })
     }
 
     await prisma.stockReserve.delete({ where: { id: reserve.id } })
-    return reply.send({ data: { id: reserve.id, released: true } })
+    return sendOk(reply, { id: reserve.id, released: true })
   })
 
   // GET /api/stock-reserve/active — reservas activas del tenant (para debug/monitor)
@@ -179,7 +180,7 @@ export default async function stockReserveRoutes(fastify) {
       orderBy: { createdAt: 'desc' },
     })
 
-    return reply.send({ data: reserves, meta: { total: reserves.length } })
+    return sendOk(reply, reserves, { total: reserves.length })
   })
 
   // GET /api/stock-reserve/available/:productId — stock disponible de un producto
@@ -197,8 +198,8 @@ export default async function stockReserveRoutes(fastify) {
       where:  { id: req.params.productId, tenantId: req.tenantId },
       select: { id: true, name: true, stock: true },
     })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
-    return reply.send({ data: { ...product, available } })
+    return sendOk(reply, { ...product, available })
   })
 }

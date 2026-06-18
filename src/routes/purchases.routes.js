@@ -2,6 +2,7 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
@@ -25,10 +26,10 @@ export default async function purchasesRoutes(fastify) {
       }),
       prisma.purchase.count({ where }),
     ])
-    return reply.send({ data: purchases, meta: { total } })
+    return sendOk(reply, purchases, { total })
   })
 
-  // FIX: GET /api/purchases/:id — endpoint faltante para ver detalle de una compra
+  // GET /api/purchases/:id
   fastify.get('/purchases/:id', { preHandler: PRE }, async (req, reply) => {
     const purchase = await prisma.purchase.findFirst({
       where:   { id: req.params.id, tenantId: req.tenantId },
@@ -38,8 +39,8 @@ export default async function purchasesRoutes(fastify) {
         user:     { select: { fullName: true, username: true } },
       },
     })
-    if (!purchase) return reply.code(404).send({ error: 'Compra no encontrada' })
-    return reply.send({ data: purchase })
+    if (!purchase) return send404(reply, 'Compra')
+    return sendOk(reply, purchase)
   })
 
   // POST /api/purchases
@@ -57,7 +58,7 @@ export default async function purchasesRoutes(fastify) {
       })).min(1),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
     const d = parsed.data
 
     const total = HALF_UP(d.items.reduce((s, i) => s + i.quantity * i.priceBuy, 0))
@@ -121,15 +122,15 @@ export default async function purchasesRoutes(fastify) {
 
         await tx.stockMovement.create({
           data: {
-            tenantId:     req.tenantId,
-            productId:    product.id,
-            productName:  product.name,
-            type:         'entrada',
-            quantity:     item.quantity,
-            previousStock:prevStock,
+            tenantId:      req.tenantId,
+            productId:     product.id,
+            productName:   product.name,
+            type:          'entrada',
+            quantity:      item.quantity,
+            previousStock: prevStock,
             newStock,
-            reason:       `Compra ${newPurchase.id.slice(0, 8)}`,
-            userId:       req.user.id,
+            reason:        `Compra ${newPurchase.id.slice(0, 8)}`,
+            userId:        req.user.id,
           },
         })
       }
@@ -137,28 +138,24 @@ export default async function purchasesRoutes(fastify) {
       return newPurchase
     })
 
-    return reply.code(201).send({ data: purchase })
+    return sendOk(reply, purchase, null, 201)
   })
 
   // PATCH /api/purchases/:id/status
-  // FIX: al anular una compra "recibida", restaurar el stock que había ingresado
   fastify.patch('/purchases/:id/status', { preHandler: PRE }, async (req, reply) => {
     const { status } = req.body
     if (!['confirmada', 'recibida', 'anulada'].includes(status)) {
-      return reply.code(400).send({ error: 'Estado inválido. Use: confirmada | recibida | anulada' })
+      return sendError(reply, 'Estado inválido. Use: confirmada | recibida | anulada')
     }
 
     const existing = await prisma.purchase.findFirst({
       where:   { id: req.params.id, tenantId: req.tenantId },
       include: { items: true },
     })
-    if (!existing) return reply.code(404).send({ error: 'Compra no encontrada' })
-    if (existing.status === 'anulada') {
-      return reply.code(409).send({ error: 'Esta compra ya está anulada' })
-    }
+    if (!existing)                    return send404(reply, 'Compra')
+    if (existing.status === 'anulada') return send409(reply, 'Esta compra ya está anulada')
 
     if (status === 'anulada') {
-      // FIX: restaurar stock solo si la compra fue "confirmada" (implica que el stock ya se ingresó)
       await prisma.$transaction(async (tx) => {
         for (const item of existing.items) {
           const product = await tx.product.findFirst({
@@ -177,15 +174,15 @@ export default async function purchasesRoutes(fastify) {
 
           await tx.stockMovement.create({
             data: {
-              tenantId:     req.tenantId,
-              productId:    product.id,
-              productName:  product.name,
-              type:         'salida',
-              quantity:     item.quantity,
-              previousStock:prevStock,
+              tenantId:      req.tenantId,
+              productId:     product.id,
+              productName:   product.name,
+              type:          'salida',
+              quantity:      item.quantity,
+              previousStock: prevStock,
               newStock,
-              reason:       `Anulación compra ${existing.id.slice(0, 8)}`,
-              userId:       req.user.id,
+              reason:        `Anulación compra ${existing.id.slice(0, 8)}`,
+              userId:        req.user.id,
             },
           })
         }
@@ -196,6 +193,6 @@ export default async function purchasesRoutes(fastify) {
       await prisma.purchase.update({ where: { id: existing.id }, data: { status } })
     }
 
-    return reply.send({ data: { id: existing.id, status } })
+    return sendOk(reply, { id: existing.id, status })
   })
 }

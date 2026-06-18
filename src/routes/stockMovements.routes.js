@@ -1,6 +1,7 @@
 import prisma   from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -47,7 +48,7 @@ export default async function stockMovementsRoutes(fastify) {
       prisma.stockMovement.count({ where }),
     ])
 
-    return reply.send({ data: movements, meta: { total, page: parseInt(page), limit: parseInt(limit) } })
+    return sendOk(reply, movements, { total, page: parseInt(page), limit: parseInt(limit) })
   })
 
   // GET /api/stock-movements/product/:productId  — kardex completo de un producto
@@ -59,7 +60,7 @@ export default async function stockMovementsRoutes(fastify) {
       where:   { id: req.params.productId, tenantId: req.tenantId },
       include: { batches: true, variants: true },
     })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
     const where = {
       tenantId:  req.tenantId,

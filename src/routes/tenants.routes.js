@@ -1,6 +1,7 @@
 import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth, requireSuperAdmin } from '../middlewares/auth.js'
+import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const configSchema = z.object({
   businessName:  z.string().min(1).optional(),
@@ -18,7 +19,7 @@ export default async function tenantsRoutes(fastify) {
   fastify.get('/tenants/check-slug/:slug', async (req, reply) => {
     const { slug } = req.params
     const existing = await prisma.tenant.findUnique({ where: { slug } })
-    return reply.send({ data: { available: !existing } })
+    return sendOk(reply, { available: !existing })
   })
 
   // GET /api/tenants/:slug  — público (usado al iniciar sesión para cargar el tenant)
@@ -34,8 +35,8 @@ export default async function tenantsRoutes(fastify) {
         createdAt: true,
       },
     })
-    if (!tenant) return reply.code(404).send({ error: 'Negocio no encontrado' })
-    return reply.send({ data: tenant })
+    if (!tenant) return send404(reply, 'Negocio')
+    return sendOk(reply, tenant)
   })
 
   // PATCH /api/tenants/:tenantId/config  — protegida (solo admin del tenant)
@@ -46,7 +47,7 @@ export default async function tenantsRoutes(fastify) {
 
     // Solo puede editar su propio tenant (o superadmin)
     if (req.user.role !== 'superadmin' && req.user.tenantId !== tenantId) {
-      return reply.code(403).send({ error: 'No tienes permiso para modificar este negocio' })
+      return sendError(reply, 'No tienes permiso para modificar este negocio', 403)
     }
 
     const parsed = configSchema.safeParse(req.body)
@@ -63,7 +64,7 @@ export default async function tenantsRoutes(fastify) {
         plan: true, emisorId: true, updatedAt: true,
       },
     })
-    return reply.send({ data: updated })
+    return sendOk(reply, updated)
   })
 
   // POST /api/tenants/register  — público (auto-registro de nuevos negocios)
@@ -137,7 +138,7 @@ export default async function tenantsRoutes(fastify) {
       },
     })
 
-    return reply.code(201).send({ data: tenant })
+    return sendOk(reply, tenant, null, 201)
   })
 
   // ── Rutas SuperAdmin ─────────────────────────────────────────────────────────
@@ -170,7 +171,7 @@ export default async function tenantsRoutes(fastify) {
       }),
       prisma.tenant.count({ where }),
     ])
-    return reply.send({ data: { items, total } })
+    return sendOk(reply, { items, total })
   })
 
   // POST /api/admin/tenants
@@ -224,7 +225,7 @@ export default async function tenantsRoutes(fastify) {
         },
       },
     })
-    return reply.code(201).send({ data: tenant })
+    return sendOk(reply, tenant, null, 201)
   })
 
   // PATCH /api/admin/tenants/:tenantId
@@ -245,13 +246,13 @@ export default async function tenantsRoutes(fastify) {
       where: { id: req.params.tenantId },
       data:  parsed.data,
     })
-    return reply.send({ data: updated })
+    return sendOk(reply, updated)
   })
 
   // DELETE /api/admin/tenants/:tenantId
   fastify.delete('/admin/tenants/:tenantId', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
     await prisma.tenant.delete({ where: { id: req.params.tenantId } })
-    return reply.send({ data: null })
+    return sendOk(reply, null)
   })
 
   // POST /api/admin/tenants/:tenantId/renew
@@ -269,7 +270,7 @@ export default async function tenantsRoutes(fastify) {
     }
     const d = parsed.data
     const tenant = await prisma.tenant.findUnique({ where: { id: req.params.tenantId } })
-    if (!tenant) return reply.code(404).send({ error: 'Tenant no encontrado' })
+    if (!tenant) return send404(reply, 'Tenant')
 
     const baseDate = d.startMode === 'expiry' && tenant.accessExpiresAt > new Date()
       ? tenant.accessExpiresAt
@@ -293,7 +294,7 @@ export default async function tenantsRoutes(fastify) {
         },
       }),
     ])
-    return reply.send({ data: { ...updated, renewal } })
+    return sendOk(reply, { ...updated, renewal })
   })
 
   // GET /api/admin/renewals
@@ -304,18 +305,18 @@ export default async function tenantsRoutes(fastify) {
       orderBy: { createdAt: 'desc' },
       include: { tenant: { select: { slug: true, businessName: true } } },
     })
-    return reply.send({ data: renewals })
+    return sendOk(reply, renewals)
   })
 
   // GET /api/admin/accesses
   fastify.get('/admin/accesses', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
-    const { tenantId, search } = req.query
+    const { tenantId } = req.query
     const accesses = await prisma.access.findMany({
       where: tenantId ? { tenantId } : {},
       orderBy: { createdAt: 'desc' },
       include: { tenant: { select: { slug: true, businessName: true, ownerEmail: true } } },
     })
-    return reply.send({ data: accesses, total: accesses.length })
+    return sendOk(reply, accesses, { total: accesses.length })
   })
 
   // POST /api/admin/accesses
@@ -329,14 +330,14 @@ export default async function tenantsRoutes(fastify) {
       notes:          z.string().default(''),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos' })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
     const d = parsed.data
     const start  = new Date(d.accessStartDate)
     const expiry = new Date(start.getTime() + d.accessDays * 86400_000)
     const access = await prisma.access.create({
       data: { tenantId: d.tenantId, plan: d.plan, billingCycle: d.billingCycle, accessStartDate: start, accessExpiresAt: expiry, notes: d.notes },
     })
-    return reply.code(201).send({ data: access })
+    return sendOk(reply, access, null, 201)
   })
 
   // PATCH /api/admin/accesses/:accessId
@@ -345,20 +346,20 @@ export default async function tenantsRoutes(fastify) {
       where: { id: req.params.accessId },
       data:  req.body,
     })
-    return reply.send({ data: access })
+    return sendOk(reply, access)
   })
 
   // DELETE /api/admin/accesses/:accessId
   fastify.delete('/admin/accesses/:accessId', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
     await prisma.access.delete({ where: { id: req.params.accessId } })
-    return reply.send({ data: null })
+    return sendOk(reply, null)
   })
 
   // GET/PUT /api/admin/prices
   fastify.get('/admin/prices', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
     const configs = await prisma.planConfig.findMany({ orderBy: { plan: 'asc' } })
     const prices = Object.fromEntries(configs.map(c => [c.plan, c]))
-    return reply.send({ data: prices })
+    return sendOk(reply, prices)
   })
 
   fastify.put('/admin/prices', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
@@ -371,13 +372,13 @@ export default async function tenantsRoutes(fastify) {
       })
     ))
     const configs = await prisma.planConfig.findMany()
-    return reply.send({ data: Object.fromEntries(configs.map(c => [c.plan, c])) })
+    return sendOk(reply, Object.fromEntries(configs.map(c => [c.plan, c])))
   })
 
   // GET/PUT /api/admin/plan-limits
   fastify.get('/admin/plan-limits', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
     const configs = await prisma.planConfig.findMany()
-    return reply.send({ data: Object.fromEntries(configs.map(c => [c.plan, c])) })
+    return sendOk(reply, Object.fromEntries(configs.map(c => [c.plan, c])))
   })
 
   fastify.put('/admin/plan-limits', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
@@ -388,7 +389,7 @@ export default async function tenantsRoutes(fastify) {
       })
     ))
     const configs = await prisma.planConfig.findMany()
-    return reply.send({ data: Object.fromEntries(configs.map(c => [c.plan, c])) })
+    return sendOk(reply, Object.fromEntries(configs.map(c => [c.plan, c])))
   })
 
   // GET/PUT /api/admin/site-settings
@@ -398,7 +399,7 @@ export default async function tenantsRoutes(fastify) {
       create: { id: 'singleton' },
       update: {},
     })
-    return reply.send({ data: settings })
+    return sendOk(reply, settings)
   })
 
   fastify.put('/admin/site-settings', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
@@ -407,7 +408,7 @@ export default async function tenantsRoutes(fastify) {
       create: { id: 'singleton', ...req.body },
       update: req.body,
     })
-    return reply.send({ data: settings })
+    return sendOk(reply, settings)
   })
 
   // GET/PUT /api/admin/alert-thresholds
@@ -417,7 +418,7 @@ export default async function tenantsRoutes(fastify) {
       create: { id: 'singleton' },
       update: {},
     })
-    return reply.send({ data: thresholds })
+    return sendOk(reply, thresholds)
   })
 
   fastify.put('/admin/alert-thresholds', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
@@ -426,6 +427,6 @@ export default async function tenantsRoutes(fastify) {
       create: { id: 'singleton', ...req.body },
       update: req.body,
     })
-    return reply.send({ data: thresholds })
+    return sendOk(reply, thresholds)
   })
 }

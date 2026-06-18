@@ -2,6 +2,7 @@ import { z }    from 'zod'
 import prisma    from '../db.js'
 import { requireAuth }    from '../middlewares/auth.js'
 import { resolveTenant }  from '../middlewares/tenant.js'
+import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -134,7 +135,7 @@ export default async function productsRoutes(fastify) {
       })) ?? [],
     }))
 
-    return reply.send({ data: mapped, meta: { total } })
+    return sendOk(reply, mapped, { total })
   })
 
   // GET /api/products/barcode/:barcode
@@ -143,14 +144,14 @@ export default async function productsRoutes(fastify) {
       where: { tenantId: req.tenantId, barcode: req.params.barcode, isActive: true },
       include: { batches: true, variants: true },
     })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
-    return reply.send({ data: product })
+    if (!product) return send404(reply, 'Producto')
+    return sendOk(reply, product)
   })
 
   // POST /api/products
   fastify.post('/products', { preHandler: PRE }, async (req, reply) => {
     // Validación mínima de campos requeridos
-    if (!req.body?.name) return reply.code(400).send({ error: 'El nombre del producto es requerido' })
+    if (!req.body?.name) return sendError(reply, 'El nombre del producto es requerido')
 
     const { data, batches, variants, components } = normalizeProductData(req.body)
 
@@ -175,7 +176,7 @@ export default async function productsRoutes(fastify) {
         bundleParents: { include: { product: { select: { id: true, name: true, barcode: true, unit: true, priceSell: true, stock: true } } } },
       },
     })
-    return reply.code(201).send({ data: product })
+    return sendOk(reply, product, null, 201)
   })
 
   // PUT /api/products/:id
@@ -183,7 +184,7 @@ export default async function productsRoutes(fastify) {
     const { id } = req.params
 
     const existing = await prisma.product.findFirst({ where: { id, tenantId: req.tenantId } })
-    if (!existing) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!existing) return send404(reply, 'Producto')
 
     const { data, batches, variants, components } = normalizeProductData(req.body)
 
@@ -239,24 +240,24 @@ export default async function productsRoutes(fastify) {
       })
     })
 
-    return reply.send({ data: product })
+    return sendOk(reply, product)
   })
 
   // DELETE /api/products/:id  (soft delete)
   fastify.delete('/products/:id', { preHandler: PRE }, async (req, reply) => {
     const existing = await prisma.product.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!existing) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!existing) return send404(reply, 'Producto')
     await prisma.product.update({ where: { id: req.params.id }, data: { isActive: false } })
-    return reply.send({ data: { id: req.params.id, deleted: true } })
+    return sendOk(reply, { id: req.params.id, deleted: true })
   })
 
   // ── LOTES ─────────────────────────────────────────────────────────────────────
   // POST /api/products/:id/batches
   fastify.post('/products/:id/batches', { preHandler: PRE }, async (req, reply) => {
     const product = await prisma.product.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
     const { batchNumber, quantity, priceBuy, expiryDate, notes } = req.body
-    if (!batchNumber?.trim()) return reply.code(400).send({ error: 'El N° de lote es requerido' })
+    if (!batchNumber?.trim()) return sendError(reply, 'El N° de lote es requerido')
     const batch = await prisma.productBatch.create({
       data: {
         productId:  req.params.id,
@@ -268,13 +269,13 @@ export default async function productsRoutes(fastify) {
         status:     'activo',
       },
     })
-    return reply.code(201).send({ data: { ...batch, batchNumber: batch.number } })
+    return sendOk(reply, { ...batch, batchNumber: batch.number }, null, 201)
   })
 
   // PUT /api/products/:id/batches/:batchId
   fastify.put('/products/:id/batches/:batchId', { preHandler: PRE }, async (req, reply) => {
     const batch = await prisma.productBatch.findUnique({ where: { id: req.params.batchId } })
-    if (!batch) return reply.code(404).send({ error: 'Lote no encontrado' })
+    if (!batch) return send404(reply, 'Lote')
     const { batchNumber, quantity, priceBuy, expiryDate, notes, status } = req.body
     const updated = await prisma.productBatch.update({
       where: { id: req.params.batchId },
@@ -287,13 +288,13 @@ export default async function productsRoutes(fastify) {
         ...(status      !== undefined && { status }),
       },
     })
-    return reply.send({ data: { ...updated, batchNumber: updated.number } })
+    return sendOk(reply, { ...updated, batchNumber: updated.number })
   })
 
   // DELETE /api/products/:id/batches/:batchId
   fastify.delete('/products/:id/batches/:batchId', { preHandler: PRE }, async (req, reply) => {
     await prisma.productBatch.delete({ where: { id: req.params.batchId } })
-    return reply.send({ data: { deleted: true } })
+    return sendOk(reply, { deleted: true })
   })
 
   // POST /api/products/:id/stock  — ajuste manual de stock
@@ -305,11 +306,11 @@ export default async function productsRoutes(fastify) {
       batchData:z.object({ number: z.string(), expiryDate: z.string().optional(), status: z.string().default('activo') }).optional(),
     })
     const parsed = schema.safeParse(req.body)
-    if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos' })
+    if (!parsed.success) return sendError(reply, 'Datos inválidos')
 
     const { quantity, type, reason, batchData } = parsed.data
     const product = await prisma.product.findFirst({ where: { id: req.params.id, tenantId: req.tenantId }, include: { batches: true } })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
     const delta    = type === 'entrada' ? quantity : -quantity
     const prevStock = product.stock
@@ -354,6 +355,6 @@ export default async function productsRoutes(fastify) {
       })
     })
 
-    return reply.send({ data: { id: product.id, newStock } })
+    return sendOk(reply, { id: product.id, newStock })
   })
 }

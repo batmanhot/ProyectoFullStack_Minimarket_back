@@ -2,6 +2,7 @@ import { z }    from 'zod'
 import prisma    from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
+import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 
@@ -38,7 +39,7 @@ export default async function mermaRoutes(fastify) {
     const records = await prisma.mermaRecord.findMany({ where, orderBy: { createdAt: 'desc' } })
     const total   = records.reduce((s, r) => s + r.quantity, 0)
     const cost    = records.reduce((s, r) => s + r.quantity * r.costUnit, 0)
-    return reply.send({ data: records.map(toDto), meta: { total: records.length, totalUnits: total, totalCost: parseFloat(cost.toFixed(2)) } })
+    return sendOk(reply, records.map(toDto), { total: records.length, totalUnits: total, totalCost: parseFloat(cost.toFixed(2)) })
   })
 
   // POST /api/merma  — registrar merma y descontar stock
@@ -55,7 +56,7 @@ export default async function mermaRoutes(fastify) {
     if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
 
     const product = await prisma.product.findFirst({ where: { id: parsed.data.productId, tenantId: req.tenantId } })
-    if (!product) return reply.code(404).send({ error: 'Producto no encontrado' })
+    if (!product) return send404(reply, 'Producto')
 
     const user = req.user
 
@@ -94,19 +95,19 @@ export default async function mermaRoutes(fastify) {
       }),
     ])
 
-    return reply.code(201).send({ data: toDto(record) })
+    return sendOk(reply, toDto(record), null, 201)
   })
 
   // PATCH /api/merma/:id/status — cambiar estado (devuelto/repuesto)
   fastify.patch('/merma/:id/status', { preHandler: PRE }, async (req, reply) => {
     const { status } = req.body
     if (!['en_merma', 'devuelto', 'repuesto'].includes(status)) {
-      return reply.code(400).send({ error: 'Estado inválido. Use: en_merma | devuelto | repuesto' })
+      return sendError(reply, 'Estado inválido. Use: en_merma | devuelto | repuesto')
     }
     const record = await prisma.mermaRecord.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
-    if (!record) return reply.code(404).send({ error: 'Registro de merma no encontrado' })
+    if (!record) return send404(reply, 'Registro de merma')
 
     const updated = await prisma.mermaRecord.update({ where: { id: record.id }, data: { status, updatedAt: new Date() } })
-    return reply.send({ data: toDto(updated) })
+    return sendOk(reply, toDto(updated))
   })
 }
