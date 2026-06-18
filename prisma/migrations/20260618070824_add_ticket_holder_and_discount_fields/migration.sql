@@ -1,0 +1,14 @@
+-- AlterTable
+ALTER TABLE "discount_tickets" ADD COLUMN     "campaignName" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "discountApplied" DOUBLE PRECISION,
+ADD COLUMN     "discountType" TEXT NOT NULL DEFAULT 'pct',
+ADD COLUMN     "discountValue" DOUBLE PRECISION NOT NULL DEFAULT 0,
+ADD COLUMN     "holderDoc" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "holderDocType" TEXT NOT NULL DEFAULT 'DNI',
+ADD COLUMN     "holderEmail" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "holderName" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "holderPhone" TEXT NOT NULL DEFAULT '',
+ADD COLUMN     "holderType" TEXT NOT NULL DEFAULT 'persona',
+ADD COLUMN     "maxAmount" DOUBLE PRECISION,
+ADD COLUMN     "notes" TEXT NOT NULL DEFAULT '',
+ALTER COLUMN "discount" SET DEFAULT 0;

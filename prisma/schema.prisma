@@ -679,14 +679,24 @@ model DiscountCampaign {
   id             String   @id @default(uuid())
   tenantId       String
   name           String
-  type           String
+  type           String   // frontend: campaign | promotion | volume | line
+  icon           String   @default("🏷️")
+  description    String   @default("")
   discount       Float    @default(0)
   discountAmount Float    @default(0)
   minAmount      Float    @default(0)
   maxDiscount    Float    @default(0)
+  scope          String   @default("all") // frontend: all | categories | products | brand
   applicableTo   String   @default("todos")
   productIds     String[] @default([])
   categoryIds    String[] @default([])
+  brands         String[] @default([])
+  daysOfWeek     Int[]    @default([])
+  buyQty         Int      @default(0)
+  payQty         Int      @default(0)
+  maxPerPurchase Int      @default(0)
+  minQty         Int      @default(0)
+  discountOnNth  Int      @default(0)
   validFrom      DateTime
   validTo        DateTime
   isActive       Boolean  @default(true)
@@ -699,19 +709,40 @@ model DiscountCampaign {
 }
 
 model DiscountTicket {
-  id           String    @id @default(uuid())
-  tenantId     String
-  code         String
-  discount     Float
-  minAmount    Float     @default(0)
-  validFrom    DateTime?
-  validTo      DateTime?
-  used         Boolean   @default(false)
-  usedAt       DateTime?
-  usedBySaleId String    @default("")
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id            String    @id @default(uuid())
+  tenantId      String
+  code          String
+
+  // Titular
+  holderType    String    @default("persona")
+  holderName    String    @default("")
+  holderDocType String    @default("DNI")
+  holderDoc     String    @default("")
+  holderPhone   String    @default("")
+  holderEmail   String    @default("")
+
+  // Descuento
+  discountType  String    @default("pct")   // 'pct' | 'amount'
+  discountValue Float     @default(0)
+  discount      Float     @default(0)       // legacy — mantenido para compatibilidad
+  maxAmount     Float?
+  minAmount     Float     @default(0)
+
+  // Vigencia y campaña
+  validFrom     DateTime?
+  validTo       DateTime?
+  campaignName  String    @default("")
+  notes         String    @default("")
+
+  // Estado de uso
+  used            Boolean   @default(false)
+  usedAt          DateTime?
+  usedBySaleId    String    @default("")
+  discountApplied Float?
+  isActive        Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
