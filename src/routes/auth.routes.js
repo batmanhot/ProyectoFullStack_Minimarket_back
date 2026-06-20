@@ -81,6 +81,17 @@ export default async function authRoutes(fastify) {
       plan:       tenant.plan,
     })
 
+    // Registrar evento de login para historial en SuperAdmin
+    prisma.loginEvent.create({
+      data: {
+        tenantId: tenant.id,
+        userId:   user.id,
+        fullName: user.fullName,
+        username: user.username,
+        role:     user.role,
+      },
+    }).catch(() => {})   // fire-and-forget; no bloquea la respuesta
+
     return reply.send({
       token,
       user: {

@@ -60,8 +60,24 @@ model Tenant {
   stockReserves  StockReserve[]
   locations      Location[]
   stockTransfers StockTransfer[]
+  loginEvents    LoginEvent[]
 
   @@map("tenants")
+}
+
+model LoginEvent {
+  id         String   @id @default(uuid())
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId     String?
+  fullName   String
+  username   String
+  role       String
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([createdAt])
+  @@map("login_events")
 }
 
 model Access {
@@ -101,18 +117,28 @@ model Renewal {
 model PlanConfig {
   id              String   @id @default(uuid())
   plan            String   @unique
+  // Precios por ciclo de facturación
   priceMonthly    Float    @default(0)
   priceQuarterly  Float    @default(0)
   priceSemiannual Float    @default(0)
   priceAnnual     Float    @default(0)
-  maxProducts     Int      @default(100)
-  maxUsers        Int      @default(2)
-  maxSalesPerDay  Int      @default(50)
-  hasSunat        Boolean  @default(false)
-  hasMultiStore   Boolean  @default(false)
-  hasReports      Boolean  @default(false)
-  hasLoyalty      Boolean  @default(false)
-  hasApiAccess    Boolean  @default(false)
+  // Límites cuantitativos (null = ilimitado)
+  products        Int?     @default(100)
+  users           Int?     @default(2)
+  warehouses      Int?     @default(1)
+  suppliers       Int?     @default(0)
+  customers       Int?     @default(50)
+  ordersPerMonth  Int?     @default(100)
+  storageGB       Int?     @default(1)
+  // Tipo de soporte
+  supportType     String   @default("email")
+  // Features booleanas
+  apiAccess       Boolean  @default(false)
+  multiCompany    Boolean  @default(false)
+  advancedExport  Boolean  @default(false)
+  advancedReports Boolean  @default(false)
+  exportData      Boolean  @default(false)
+  multiCash       Boolean  @default(false)
   updatedAt       DateTime @updatedAt
 
   @@map("plan_configs")
@@ -120,10 +146,39 @@ model PlanConfig {
 
 model SiteSettings {
   id              String   @id @default("singleton")
-  heroTitle       String   @default("Minimarket POS")
-  heroSubtitle    String   @default("")
-  primaryColor    String   @default("#f59e0b")
+  // Identidad / Marca
+  brandName       String   @default("MiniMarket POS")
+  tagline         String   @default("")
+  description     String   @default("")
+  primaryColor    String   @default("#00c896")
   logoUrl         String   @default("")
+  systemVersion   String   @default("v1.0")
+  // Contacto
+  phone           String   @default("")
+  whatsapp        String   @default("")
+  email           String   @default("")
+  address         String   @default("")
+  // Redes sociales
+  facebook        String   @default("")
+  instagram       String   @default("")
+  tiktok          String   @default("")
+  // Hero / Portada
+  heroTitle       String   @default("Gestiona tu tienda con inteligencia")
+  heroSubtitle    String   @default("")
+  heroCtaText     String   @default("Empezar gratis")
+  heroCtaUrl      String   @default("#planes")
+  heroCtaSecText  String   @default("")
+  heroCtaSecUrl   String   @default("")
+  heroImage       String   @default("")
+  // SEO / Meta
+  metaTitle       String   @default("")
+  metaDesc        String   @default("")
+  seoKeywords     String   @default("")
+  // Footer y config general
+  footerText      String   @default("")
+  showPricesPublic Boolean @default(true)
+  publicCurrency  String   @default("PEN")
+  trialDays       Int      @default(30)
   maintenanceMode Boolean  @default(false)
   updatedAt       DateTime @updatedAt
 

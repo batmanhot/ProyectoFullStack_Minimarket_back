@@ -164,9 +164,10 @@ export default async function tenantsRoutes(fastify) {
         orderBy: { createdAt: 'desc' },
         select: {
           id: true, slug: true, businessName: true, sector: true,
-          ownerEmail: true, plan: true, billingCycle: true,
-          accessExpiresAt: true, isActive: true, createdAt: true,
-          registrationSource: true,
+          ruc: true, ownerName: true, ownerEmail: true, phone: true,
+          plan: true, billingCycle: true, internalNotes: true,
+          accessStartDate: true, accessExpiresAt: true,
+          isActive: true, createdAt: true, registrationSource: true,
         },
       }),
       prisma.tenant.count({ where }),
@@ -231,20 +232,31 @@ export default async function tenantsRoutes(fastify) {
   // PATCH /api/admin/tenants/:tenantId
   fastify.patch('/admin/tenants/:tenantId', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
     const schema = z.object({
-      businessName:  z.string().optional(),
-      plan:          z.enum(['trial','basic','pro','enterprise']).optional(),
-      billingCycle:  z.enum(['monthly','quarterly','semiannual','annual']).optional(),
-      isActive:      z.boolean().optional(),
-      internalNotes: z.string().optional(),
-      emisorId:      z.string().optional(),
+      businessName:    z.string().optional(),
+      sector:          z.string().optional(),
+      ruc:             z.string().optional(),
+      ownerName:       z.string().optional(),
+      ownerEmail:      z.string().email().optional(),
+      phone:           z.string().optional(),
+      plan:            z.enum(['trial','basic','pro','enterprise']).optional(),
+      billingCycle:    z.enum(['monthly','quarterly','semiannual','annual']).optional(),
+      isActive:        z.boolean().optional(),
+      accessStartDate: z.string().optional(),
+      accessExpiresAt: z.string().optional(),
+      internalNotes:   z.string().optional(),
+      emisorId:        z.string().optional(),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
     }
+    const d = parsed.data
+    const data = { ...d }
+    if (d.accessStartDate) data.accessStartDate = new Date(d.accessStartDate)
+    if (d.accessExpiresAt) data.accessExpiresAt = new Date(d.accessExpiresAt)
     const updated = await prisma.tenant.update({
       where: { id: req.params.tenantId },
-      data:  parsed.data,
+      data,
     })
     return sendOk(reply, updated)
   })
@@ -355,8 +367,28 @@ export default async function tenantsRoutes(fastify) {
     return sendOk(reply, null)
   })
 
+  // Seed inicial de PlanConfig si la tabla está vacía
+  const PLAN_DEFAULTS = {
+    trial:      { priceMonthly: 0,   priceQuarterly: 0,   priceSemiannual: 0,   priceAnnual: 0,   products: 50,   users: 1, warehouses: 1, suppliers: 0,  customers: 20,  ordersPerMonth: 50,  storageGB: 0, supportType: 'none',     apiAccess: false, multiCompany: false, advancedExport: false, advancedReports: false, exportData: false, multiCash: false },
+    basic:      { priceMonthly: 49,  priceQuarterly: 130, priceSemiannual: 240, priceAnnual: 450, products: 500,  users: 2, warehouses: 1, suppliers: 5,  customers: 100, ordersPerMonth: 200, storageGB: 1, supportType: 'email',    apiAccess: false, multiCompany: false, advancedExport: false, advancedReports: false, exportData: true,  multiCash: false },
+    pro:        { priceMonthly: 99,  priceQuarterly: 270, priceSemiannual: 510, priceAnnual: 950, products: 2000, users: 5, warehouses: 2, suppliers: 20, customers: 500, ordersPerMonth: 999, storageGB: 5, supportType: 'priority', apiAccess: false, multiCompany: false, advancedExport: true,  advancedReports: true,  exportData: true,  multiCash: true  },
+    enterprise: { priceMonthly: 199, priceQuarterly: 540, priceSemiannual: 999, priceAnnual: 1890, products: null, users: null, warehouses: null, suppliers: null, customers: null, ordersPerMonth: null, storageGB: 20, supportType: 'dedicated', apiAccess: true, multiCompany: true, advancedExport: true, advancedReports: true, exportData: true, multiCash: true },
+  }
+
+  const _ensurePlanConfigs = async () => {
+    const count = await prisma.planConfig.count()
+    if (count === 0) {
+      await Promise.all(
+        Object.entries(PLAN_DEFAULTS).map(([plan, data]) =>
+          prisma.planConfig.upsert({ where: { plan }, create: { plan, ...data }, update: data })
+        )
+      )
+    }
+  }
+
   // GET/PUT /api/admin/prices
   fastify.get('/admin/prices', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    await _ensurePlanConfigs()
     const configs = await prisma.planConfig.findMany({ orderBy: { plan: 'asc' } })
     const prices = Object.fromEntries(configs.map(c => [c.plan, c]))
     return sendOk(reply, prices)
@@ -377,6 +409,7 @@ export default async function tenantsRoutes(fastify) {
 
   // GET/PUT /api/admin/plan-limits
   fastify.get('/admin/plan-limits', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    await _ensurePlanConfigs()
     const configs = await prisma.planConfig.findMany()
     return sendOk(reply, Object.fromEntries(configs.map(c => [c.plan, c])))
   })
@@ -428,5 +461,28 @@ export default async function tenantsRoutes(fastify) {
       update: req.body,
     })
     return sendOk(reply, thresholds)
+  })
+
+  // GET /api/admin/login-events  — historial de inicios de sesión de todos los tenants
+  fastify.get('/admin/login-events', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    const { tenantId, limit = '100', offset = '0' } = req.query
+    const where = tenantId ? { tenantId } : {}
+    const [items, total] = await Promise.all([
+      prisma.loginEvent.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take:    parseInt(limit),
+        skip:    parseInt(offset),
+        include: { tenant: { select: { businessName: true, slug: true } } },
+      }),
+      prisma.loginEvent.count({ where }),
+    ])
+    return sendOk(reply, { items, total })
+  })
+
+  // DELETE /api/admin/login-events/:id
+  fastify.delete('/admin/login-events/:id', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    await prisma.loginEvent.delete({ where: { id: req.params.id } })
+    return sendOk(reply, null)
   })
 }
