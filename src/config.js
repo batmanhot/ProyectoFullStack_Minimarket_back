@@ -1,21 +1,19 @@
 import 'dotenv/config'
 
+const nodeEnv = process.env.NODE_ENV || 'development'
+
 export const config = {
   // Servidor
   port:        parseInt(process.env.PORT || '3001'),
-  nodeEnv:     process.env.NODE_ENV || 'development',
+  nodeEnv,
+  host:        process.env.HOST || (nodeEnv === 'production' ? '0.0.0.0' : '127.0.0.1'),
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  corsOrigins: (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
+    .split(',').map(origin => origin.trim()).filter(Boolean),
 
   // JWT
   jwtSecret:    process.env.JWT_SECRET    || 'dev-secret-change-in-production',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
-
-  // factu-api (SUNAT) — Fase 7, pendiente
-  factuApiUrl:  process.env.FACTU_API_URL  || 'http://localhost:3002/api/v1',
-  factuApiKey:  process.env.FACTU_API_KEY  || '',
-  emisorId:     process.env.EMISOR_ID      || '',
-  emisorRuc:    process.env.EMISOR_RUC     || '',
-  emisorNombre: process.env.EMISOR_NOMBRE  || '',
 
   // Superadmin credentials (acceso global, sin tenant)
   superadminUser: process.env.SUPERADMIN_USER || 'superadmin',

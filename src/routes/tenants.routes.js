@@ -1,6 +1,8 @@
 import { z }   from 'zod'
 import prisma   from '../db.js'
 import { requireAuth, requireSuperAdmin } from '../middlewares/auth.js'
+import { resolveTenant } from '../middlewares/tenant.js'
+import { registrationRateLimit } from '../middlewares/rateLimit.js'
 import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const configSchema = z.object({
@@ -13,6 +15,68 @@ const configSchema = z.object({
   emisorId:      z.string().optional(),
 }).strict()
 
+const plans = ['trial', 'basic', 'pro', 'enterprise']
+const billingCycles = ['monthly', 'quarterly', 'semiannual', 'annual']
+const dateSchema = z.string().datetime({ offset: true }).or(z.string().date())
+
+const accessPatchSchema = z.object({
+  plan: z.enum(plans).optional(),
+  billingCycle: z.enum(billingCycles).optional(),
+  accessStartDate: dateSchema.optional(),
+  accessExpiresAt: dateSchema.optional(),
+  isActive: z.boolean().optional(),
+  notes: z.string().max(2000).optional(),
+}).strict()
+
+const planConfigUpdateSchema = z.object({
+  priceMonthly: z.number().nonnegative().optional(),
+  priceQuarterly: z.number().nonnegative().optional(),
+  priceSemiannual: z.number().nonnegative().optional(),
+  priceAnnual: z.number().nonnegative().optional(),
+  products: z.number().int().nonnegative().nullable().optional(),
+  users: z.number().int().nonnegative().nullable().optional(),
+  warehouses: z.number().int().nonnegative().nullable().optional(),
+  suppliers: z.number().int().nonnegative().nullable().optional(),
+  customers: z.number().int().nonnegative().nullable().optional(),
+  ordersPerMonth: z.number().int().nonnegative().nullable().optional(),
+  storageGB: z.number().int().nonnegative().nullable().optional(),
+  supportType: z.enum(['none', 'email', 'priority', 'dedicated']).optional(),
+  apiAccess: z.boolean().optional(),
+  multiCompany: z.boolean().optional(),
+  advancedExport: z.boolean().optional(),
+  advancedReports: z.boolean().optional(),
+  exportData: z.boolean().optional(),
+  multiCash: z.boolean().optional(),
+}).strict()
+
+const planUpdatesSchema = z.object({
+  trial: planConfigUpdateSchema.optional(),
+  basic: planConfigUpdateSchema.optional(),
+  pro: planConfigUpdateSchema.optional(),
+  enterprise: planConfigUpdateSchema.optional(),
+}).strict()
+
+const siteSettingsSchema = z.object({
+  brandName: z.string().max(120).optional(), tagline: z.string().max(240).optional(),
+  description: z.string().max(2000).optional(), primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  logoUrl: z.string().max(2048).optional(), systemVersion: z.string().max(40).optional(),
+  phone: z.string().max(40).optional(), whatsapp: z.string().max(40).optional(),
+  email: z.string().email().or(z.literal('')).optional(), address: z.string().max(300).optional(),
+  facebook: z.string().max(2048).optional(), instagram: z.string().max(2048).optional(), tiktok: z.string().max(2048).optional(),
+  heroTitle: z.string().max(180).optional(), heroSubtitle: z.string().max(500).optional(),
+  heroCtaText: z.string().max(80).optional(), heroCtaUrl: z.string().max(2048).optional(),
+  heroCtaSecText: z.string().max(80).optional(), heroCtaSecUrl: z.string().max(2048).optional(), heroImage: z.string().max(2048).optional(),
+  metaTitle: z.string().max(120).optional(), metaDesc: z.string().max(300).optional(), seoKeywords: z.string().max(500).optional(),
+  footerText: z.string().max(500).optional(), showPricesPublic: z.boolean().optional(),
+  publicCurrency: z.enum(['PEN', 'USD']).optional(), trialDays: z.number().int().min(1).max(365).optional(), maintenanceMode: z.boolean().optional(),
+}).strict()
+
+const alertThresholdSchema = z.object({
+  warning: z.number().int().min(1).max(365).optional(),
+  urgent: z.number().int().min(1).max(365).optional(),
+  critical: z.number().int().min(1).max(365).optional(),
+}).strict()
+
 export default async function tenantsRoutes(fastify) {
 
   // GET /api/tenants/check-slug/:slug  — público (usado en registro)
@@ -22,17 +86,30 @@ export default async function tenantsRoutes(fastify) {
     return sendOk(reply, { available: !existing })
   })
 
-  // GET /api/tenants/:slug  — público (usado al iniciar sesión para cargar el tenant)
+  // GET /api/tenants/current — ficha completa del negocio autenticado.
+  fastify.get('/tenants/current', { preHandler: [requireAuth, resolveTenant] }, async (req, reply) => {
+    if (!req.tenantId) return sendError(reply, 'Esta cuenta no pertenece a un negocio', 400)
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: req.tenantId },
+      select: {
+        id: true, slug: true, businessName: true, sector: true,
+        ruc: true, ownerName: true, ownerEmail: true, phone: true,
+        plan: true, billingCycle: true, accessStartDate: true,
+        accessExpiresAt: true, isActive: true, systemVersion: true, emisorId: true,
+      },
+    })
+    if (!tenant) return send404(reply, 'Negocio')
+    return sendOk(reply, tenant)
+  })
+
+  // GET /api/tenants/:slug — público; solo metadatos necesarios antes del login.
   fastify.get('/tenants/:slug', async (req, reply) => {
     const tenant = await prisma.tenant.findUnique({
       where: { slug: req.params.slug },
       select: {
         id: true, slug: true, businessName: true, sector: true,
-        ruc: true, ownerName: true, ownerEmail: true, phone: true,
-        plan: true, billingCycle: true,
-        accessStartDate: true, accessExpiresAt: true,
-        isActive: true, systemVersion: true, emisorId: true,
-        createdAt: true,
+        plan: true, billingCycle: true, accessExpiresAt: true,
+        isActive: true, systemVersion: true,
       },
     })
     if (!tenant) return send404(reply, 'Negocio')
@@ -45,9 +122,12 @@ export default async function tenantsRoutes(fastify) {
   }, async (req, reply) => {
     const { tenantId } = req.params
 
-    // Solo puede editar su propio tenant (o superadmin)
+    // Solo el administrador titular puede editar su propio tenant (o superadmin).
     if (req.user.role !== 'superadmin' && req.user.tenantId !== tenantId) {
       return sendError(reply, 'No tienes permiso para modificar este negocio', 403)
+    }
+    if (req.user.role !== 'superadmin' && req.user.role !== 'admin') {
+      return sendError(reply, 'Solo el administrador puede modificar este negocio', 403)
     }
 
     const parsed = configSchema.safeParse(req.body)
@@ -68,16 +148,14 @@ export default async function tenantsRoutes(fastify) {
   })
 
   // POST /api/tenants/register  — público (auto-registro de nuevos negocios)
-  fastify.post('/tenants/register', async (req, reply) => {
+  fastify.post('/tenants/register', { preHandler: [registrationRateLimit] }, async (req, reply) => {
     const schema = z.object({
       businessName:  z.string().min(2),
       sector:        z.string().min(1),
       ownerName:     z.string().min(2),
       ownerEmail:    z.string().email(),
       phone:         z.string().min(6),
-      password:      z.string().min(6),
-      plan:          z.enum(['trial', 'basic', 'pro', 'enterprise']).default('trial'),
-      billingCycle:  z.enum(['monthly', 'quarterly', 'semiannual', 'annual']).default('monthly'),
+      password:      z.string().min(12).max(128),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) {
@@ -99,10 +177,12 @@ export default async function tenantsRoutes(fastify) {
       slug = `${baseSlug}-${attempt}`
     }
 
-    // Período de acceso según plan (trial = 14 días)
+    // El autorregistro nunca concede planes pagados: su activación solo puede
+    // hacerla el superadmin tras confirmar el pago.
+    const plan = 'trial'
+    const billingCycle = 'monthly'
     const trialDays  = 14
-    const planDays   = { monthly: 30, quarterly: 90, semiannual: 180, annual: 365 }
-    const days       = d.plan === 'trial' ? trialDays : (planDays[d.billingCycle] || 30)
+    const days       = trialDays
     const accessStart   = new Date()
     const accessExpires = new Date(accessStart.getTime() + days * 86400_000)
 
@@ -117,8 +197,8 @@ export default async function tenantsRoutes(fastify) {
         ownerName:         d.ownerName,
         ownerEmail:        d.ownerEmail,
         phone:             d.phone,
-        plan:              d.plan,
-        billingCycle:      d.billingCycle,
+        plan,
+        billingCycle,
         accessStartDate:   accessStart,
         accessExpiresAt:   accessExpires,
         registrationSource: 'self-service',
@@ -183,7 +263,7 @@ export default async function tenantsRoutes(fastify) {
       ownerName:     z.string().min(2),
       ownerEmail:    z.string().email(),
       phone:         z.string().default(''),
-      password:      z.string().min(6),
+      password:      z.string().min(12).max(128),
       plan:          z.enum(['trial','basic','pro','enterprise']).default('basic'),
       billingCycle:  z.enum(['monthly','quarterly','semiannual','annual']).default('monthly'),
       internalNotes: z.string().default(''),
@@ -354,9 +434,14 @@ export default async function tenantsRoutes(fastify) {
 
   // PATCH /api/admin/accesses/:accessId
   fastify.patch('/admin/accesses/:accessId', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    const parsed = accessPatchSchema.safeParse(req.body)
+    if (!parsed.success) return sendError(reply, 'Datos invÃ¡lidos')
+    const data = { ...parsed.data }
+    if (data.accessStartDate) data.accessStartDate = new Date(data.accessStartDate)
+    if (data.accessExpiresAt) data.accessExpiresAt = new Date(data.accessExpiresAt)
     const access = await prisma.access.update({
       where: { id: req.params.accessId },
-      data:  req.body,
+      data,
     })
     return sendOk(reply, access)
   })
@@ -395,7 +480,9 @@ export default async function tenantsRoutes(fastify) {
   })
 
   fastify.put('/admin/prices', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
-    const updates = Object.entries(req.body)
+    const parsed = planUpdatesSchema.safeParse(req.body)
+    if (!parsed.success) return sendError(reply, 'Datos invÃ¡lidos')
+    const updates = Object.entries(parsed.data).filter(([, data]) => data !== undefined)
     await Promise.all(updates.map(([plan, data]) =>
       prisma.planConfig.upsert({
         where:  { plan },
@@ -415,7 +502,9 @@ export default async function tenantsRoutes(fastify) {
   })
 
   fastify.put('/admin/plan-limits', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
-    const updates = Object.entries(req.body)
+    const parsed = planUpdatesSchema.safeParse(req.body)
+    if (!parsed.success) return sendError(reply, 'Datos invÃ¡lidos')
+    const updates = Object.entries(parsed.data).filter(([, data]) => data !== undefined)
     await Promise.all(updates.map(([plan, data]) =>
       prisma.planConfig.upsert({
         where: { plan }, create: { plan, ...data }, update: data,
@@ -436,10 +525,12 @@ export default async function tenantsRoutes(fastify) {
   })
 
   fastify.put('/admin/site-settings', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    const parsed = siteSettingsSchema.safeParse(req.body)
+    if (!parsed.success) return sendError(reply, 'Datos invÃ¡lidos')
     const settings = await prisma.siteSettings.upsert({
       where:  { id: 'singleton' },
-      create: { id: 'singleton', ...req.body },
-      update: req.body,
+      create: { id: 'singleton', ...parsed.data },
+      update: parsed.data,
     })
     return sendOk(reply, settings)
   })
@@ -455,10 +546,12 @@ export default async function tenantsRoutes(fastify) {
   })
 
   fastify.put('/admin/alert-thresholds', { preHandler: [requireSuperAdmin] }, async (req, reply) => {
+    const parsed = alertThresholdSchema.safeParse(req.body)
+    if (!parsed.success) return sendError(reply, 'Datos invÃ¡lidos')
     const thresholds = await prisma.alertThreshold.upsert({
       where:  { id: 'singleton' },
-      create: { id: 'singleton', ...req.body },
-      update: req.body,
+      create: { id: 'singleton', ...parsed.data },
+      update: parsed.data,
     })
     return sendOk(reply, thresholds)
   })

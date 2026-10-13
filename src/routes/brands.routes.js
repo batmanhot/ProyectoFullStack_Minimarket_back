@@ -1,10 +1,11 @@
 import { z }    from 'zod'
 import prisma    from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 const toDto = (b) => ({ id: b.slug, slug: b.slug, name: b.name, description: b.description, color: b.color, logoUrl: b.logoUrl, isActive: b.isActive, createdAt: b.createdAt })
 
@@ -23,7 +24,7 @@ export default async function brandsRoutes(fastify) {
   })
 
   // POST /api/brands
-  fastify.post('/brands', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/brands', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       name:        z.string().min(1),
       slug:        z.string().optional(),
@@ -52,7 +53,7 @@ export default async function brandsRoutes(fastify) {
   })
 
   // PUT /api/brands/:slug
-  fastify.put('/brands/:slug', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/brands/:slug', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       name:        z.string().min(1).optional(),
       description: z.string().optional(),
@@ -71,7 +72,7 @@ export default async function brandsRoutes(fastify) {
   })
 
   // DELETE /api/brands/:slug
-  fastify.delete('/brands/:slug', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/brands/:slug', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const brand = await prisma.brand.findUnique({ where: { tenantId_slug: { tenantId: req.tenantId, slug: req.params.slug } } })
     if (!brand) return send404(reply, 'Marca')
 

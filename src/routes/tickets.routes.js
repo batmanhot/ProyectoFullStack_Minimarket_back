@@ -1,10 +1,11 @@
 import { z }   from 'zod'
 import prisma   from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 const ticketSchema = z.object({
   code:          z.string().min(3).transform(s => s.toUpperCase()),
@@ -76,7 +77,7 @@ export default async function ticketsRoutes(fastify) {
   })
 
   // POST /api/tickets — crear uno o varios tickets (batch si viene quantity > 1)
-  fastify.post('/tickets', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/tickets', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const parsed = ticketSchema.safeParse(req.body)
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
@@ -101,7 +102,7 @@ export default async function ticketsRoutes(fastify) {
   })
 
   // PUT /api/tickets/:id — actualizar ticket
-  fastify.put('/tickets/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/tickets/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.discountTicket.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
@@ -130,7 +131,7 @@ export default async function ticketsRoutes(fastify) {
   })
 
   // DELETE /api/tickets/:id
-  fastify.delete('/tickets/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/tickets/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.discountTicket.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })

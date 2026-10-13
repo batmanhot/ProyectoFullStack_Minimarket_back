@@ -85,7 +85,10 @@ export default async function cashRoutes(fastify) {
       where: { id: req.params.id, tenantId: req.tenantId },
     })
     if (!session) return send404(reply, 'Sesión de caja')
-    if (session.status === 'cerrada') return send409(reply, 'Esta caja ya está cerrada')
+    // El cliente puede reintentar una solicitud después de perder la respuesta.
+    // Cerrar dos veces debe ser seguro: la segunda respuesta confirma el estado
+    // final en vez de convertir un cierre ya aplicado en un error de conflicto.
+    if (session.status === 'cerrada') return sendOk(reply, session)
 
     // Calcular totales reales del turno desde la DB
     const salesInSession = await prisma.sale.findMany({

@@ -4,6 +4,20 @@ import cors      from '@fastify/cors'
 import jwt       from '@fastify/jwt'
 import { config } from './config.js'
 
+const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1'])
+const isExternallyReachable = !loopbackHosts.has(config.host)
+const hasHttpsOrigins = config.corsOrigins.every(origin => {
+  try { return new URL(origin).protocol === 'https:' } catch { return false }
+})
+const hasWeakCredentials = config.jwtSecret.length < 32 || config.superadminPass.length < 12 ||
+  ['dev-secret-change-in-production', 'superadmin123'].includes(config.jwtSecret) ||
+  ['dev-secret-change-in-production', 'superadmin123'].includes(config.superadminPass)
+
+if (isExternallyReachable && hasWeakCredentials) {
+  console.error('FATAL: las credenciales no son seguras para un servidor expuesto. Usa secretos fuertes o limita HOST a 127.0.0.1.')
+  process.exit(1)
+}
+
 // ── Rutas Fase 1 ──────────────────────────────────────────────────────────────
 import authRoutes    from './routes/auth.routes.js'
 import tenantsRoutes from './routes/tenants.routes.js'
@@ -56,14 +70,41 @@ if (config.nodeEnv === 'production') {
     console.error('FATAL: SUPERADMIN_PASS usa el valor por defecto. Configura la variable de entorno antes de iniciar en producción.')
     process.exit(1)
   }
+  if (!process.env.FRONTEND_URL || config.corsOrigins.some(origin => /^http:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(origin))) {
+    console.error('FATAL: configura FRONTEND_URL/CORS_ORIGINS con el dominio HTTPS publicado; localhost no está permitido en producción.')
+    process.exit(1)
+  }
+  if (!hasHttpsOrigins) {
+    console.error('FATAL: CORS_ORIGINS debe contener unicamente origenes HTTPS en produccion.')
+    process.exit(1)
+  }
 }
 
 const fastify = Fastify({ logger: { level: config.nodeEnv === 'development' ? 'info' : 'warn' } })
 
+// Cabeceras defensivas para la API. Se definen sin depender de un paquete extra
+// y aplican incluso a respuestas de error.
+fastify.addHook('onSend', async (_request, reply, payload) => {
+  reply
+    .header('X-Content-Type-Options', 'nosniff')
+    .header('X-Frame-Options', 'DENY')
+    .header('Referrer-Policy', 'no-referrer')
+    .header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    .header('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+    .header('Cache-Control', 'no-store')
+  if (config.nodeEnv === 'production') {
+    reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  }
+  return payload
+})
+
 await fastify.register(cors, {
-  origin:         [config.frontendUrl, 'http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'],
+  origin:         config.nodeEnv === 'production'
+    ? config.corsOrigins
+    : [...new Set([...config.corsOrigins, 'http://localhost:3000', 'http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'])],
   methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Tenant-Id', 'X-Tenant-Slug'],
+  credentials:     true,
 })
 
 await fastify.register(jwt, {
@@ -131,13 +172,13 @@ fastify.setNotFoundHandler(async (req, reply) => {
 fastify.setErrorHandler(async (err, req, reply) => {
   fastify.log.error(err)
   return reply.code(err.statusCode || 500).send({
-    error: err.message || 'Error interno del servidor',
+    error: config.nodeEnv === 'production' ? 'Error interno del servidor' : (err.message || 'Error interno del servidor'),
     ...(config.nodeEnv === 'development' && { stack: err.stack }),
   })
 })
 
 try {
-  await fastify.listen({ port: config.port, host: '0.0.0.0' })
+  await fastify.listen({ port: config.port, host: config.host })
   console.log(`\n  ┌──────────────────────────────────────────────────────┐`)
   console.log(`  │  minimarket-api v2.2.0                               │`)
   console.log(`  │  http://localhost:${config.port}                           │`)
@@ -152,7 +193,7 @@ try {
   console.log(`  │  ✓ F6  Reportes · Dashboard · Alertas               │`)
   console.log(`  │  ✓ FX  Reserva multi-caja · Sync offline            │`)
   console.log(`  │  ✓ FX  Ubicaciones · Seriales · Email alerts        │`)
-  console.log(`  │  ○ F7  SUNAT via factu-api (pendiente)              │`)
+  console.log(`  │  ○ F7  SUNAT no configurado                         │`)
   console.log(`  └──────────────────────────────────────────────────────┘\n`)
 } catch (err) {
   fastify.log.error(err)

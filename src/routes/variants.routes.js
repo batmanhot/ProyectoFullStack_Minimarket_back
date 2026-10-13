@@ -10,11 +10,12 @@
  */
 import { z }           from 'zod'
 import prisma          from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, send404, send409 } from '../utils/response.js'
 
 const PRE     = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
 
 const variantCreateSchema = z.object({
@@ -61,7 +62,7 @@ export default async function variantsRoutes(fastify) {
   })
 
   // POST /api/products/:productId/variants
-  fastify.post('/products/:productId/variants', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/products/:productId/variants', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const parsed = variantCreateSchema.safeParse(req.body)
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
@@ -141,7 +142,7 @@ export default async function variantsRoutes(fastify) {
   })
 
   // PUT /api/products/:productId/variants/:id
-  fastify.put('/products/:productId/variants/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/products/:productId/variants/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const variant = await prisma.productVariant.findFirst({
       where: { id: req.params.id, productId: req.params.productId },
     })
@@ -206,7 +207,7 @@ export default async function variantsRoutes(fastify) {
   })
 
   // PATCH /api/products/:productId/variants/:id/stock — ajuste manual de stock
-  fastify.patch('/products/:productId/variants/:id/stock', { preHandler: PRE }, async (req, reply) => {
+  fastify.patch('/products/:productId/variants/:id/stock', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       quantity: z.number().positive(),
       type:     z.enum(['entrada', 'salida']),
@@ -269,7 +270,7 @@ export default async function variantsRoutes(fastify) {
   })
 
   // DELETE /api/products/:productId/variants/:id  (soft delete)
-  fastify.delete('/products/:productId/variants/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/products/:productId/variants/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const variant = await prisma.productVariant.findFirst({
       where: { id: req.params.id, productId: req.params.productId },
     })

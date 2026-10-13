@@ -80,6 +80,16 @@ model LoginEvent {
   @@map("login_events")
 }
 
+model RateLimitBucket {
+  key       String   @id
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+  @@map("rate_limit_buckets")
+}
+
 model Access {
   id              String   @id @default(uuid())
   tenantId        String
@@ -208,6 +218,7 @@ model User {
   role         String   @default("cajero")
   email        String   @default("")
   isActive     Boolean  @default(true)
+  sessionVersion Int    @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

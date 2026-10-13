@@ -1,13 +1,14 @@
 {
   "name": "minimarket-api",
   "version": "1.0.0",
-  "description": "Stub backend Minimarket — integration testing con factu-api",
+  "description": "Backend oficial del sistema POS Minimarket",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "seed": "node prisma/seed.js",
+    "e2e:reset": "node scripts/reset-e2e-data.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -16,19 +17,19 @@
     "seed": "node prisma/seed.js"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.9",
-    "vitest": "^4.1.9"
+    "@vitest/coverage-v8": "^4.1.11",
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "@fastify/cors": "^10.1.0",
-    "@fastify/jwt": "^10.1.0",
+    "@fastify/jwt": "^10.2.4",
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.4.5",
-    "fastify": "^5.8.5",
-    "nodemailer": "^9.0.0",
+    "fastify": "^5.12.5",
+    "nodemailer": "^10.0.16",
     "prisma": "^5.22.0",
-    "uuid": "^10.0.0",
+    "uuid": "^14.0.2",
     "zod": "^4.4.3"
   }
 }

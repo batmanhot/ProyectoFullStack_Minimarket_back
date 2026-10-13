@@ -1,10 +1,11 @@
 import { z }    from 'zod'
 import prisma    from '../db.js'
-import { requireAuth }    from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant }  from '../middlewares/tenant.js'
 import { sendOk, sendError, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 // ── Schemas Zod ──────────────────────────────────────────────────────────────
 const productSchema = z.object({
@@ -149,7 +150,7 @@ export default async function productsRoutes(fastify) {
   })
 
   // POST /api/products
-  fastify.post('/products', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/products', { preHandler: PRE_ADMIN }, async (req, reply) => {
     // Validación mínima de campos requeridos
     if (!req.body?.name) return sendError(reply, 'El nombre del producto es requerido')
 
@@ -180,7 +181,7 @@ export default async function productsRoutes(fastify) {
   })
 
   // PUT /api/products/:id
-  fastify.put('/products/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/products/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const { id } = req.params
 
     const existing = await prisma.product.findFirst({ where: { id, tenantId: req.tenantId } })
@@ -244,7 +245,7 @@ export default async function productsRoutes(fastify) {
   })
 
   // DELETE /api/products/:id  (soft delete)
-  fastify.delete('/products/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/products/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.product.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
     if (!existing) return send404(reply, 'Producto')
     await prisma.product.update({ where: { id: req.params.id }, data: { isActive: false } })
@@ -253,7 +254,7 @@ export default async function productsRoutes(fastify) {
 
   // ── LOTES ─────────────────────────────────────────────────────────────────────
   // POST /api/products/:id/batches
-  fastify.post('/products/:id/batches', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/products/:id/batches', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const product = await prisma.product.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } })
     if (!product) return send404(reply, 'Producto')
     const { batchNumber, quantity, priceBuy, expiryDate, notes } = req.body
@@ -273,7 +274,7 @@ export default async function productsRoutes(fastify) {
   })
 
   // PUT /api/products/:id/batches/:batchId
-  fastify.put('/products/:id/batches/:batchId', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/products/:id/batches/:batchId', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const batch = await prisma.productBatch.findUnique({ where: { id: req.params.batchId } })
     if (!batch) return send404(reply, 'Lote')
     const { batchNumber, quantity, priceBuy, expiryDate, notes, status } = req.body
@@ -292,13 +293,13 @@ export default async function productsRoutes(fastify) {
   })
 
   // DELETE /api/products/:id/batches/:batchId
-  fastify.delete('/products/:id/batches/:batchId', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/products/:id/batches/:batchId', { preHandler: PRE_ADMIN }, async (req, reply) => {
     await prisma.productBatch.delete({ where: { id: req.params.batchId } })
     return sendOk(reply, { deleted: true })
   })
 
   // POST /api/products/:id/stock  — ajuste manual de stock
-  fastify.post('/products/:id/stock', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/products/:id/stock', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       quantity: z.number().positive(),
       type:     z.enum(['entrada', 'salida']),

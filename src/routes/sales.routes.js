@@ -2,13 +2,37 @@ import { z }    from 'zod'
 import prisma    from '../db.js'
 import { requireAuth }    from '../middlewares/auth.js'
 import { resolveTenant }  from '../middlewares/tenant.js'
-import { allocateStock, restoreStock, calcPointsEarned, calcLoyaltyLevel } from '../services/inventory.service.js'
+import { allocateStock, restoreStock, calcPointsEarned, calcLoyaltyLevel, lockProducts, StockInsufficientError } from '../services/inventory.service.js'
 import { nextInvoiceNumber } from '../utils/invoiceCounter.js'
 import { DISCOUNT } from '../config/businessRules.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
+
+// La interfaz puede validar para mejorar la experiencia, pero el servidor debe
+// rechazar importes o cantidades inválidos aunque la petición haya sido alterada.
+const saleSchema = z.object({
+  items: z.array(z.object({
+    productId:        z.string().min(1),
+    quantity:         z.number().positive(),
+    unitPrice:        z.number().nonnegative(),
+    discount:         z.number().nonnegative().optional(),
+    campaignDiscount: z.number().nonnegative().optional(),
+    totalDiscount:    z.number().nonnegative().optional(),
+  }).passthrough()).min(1),
+  payments: z.array(z.object({
+    method:    z.string().min(1),
+    amount:    z.number().positive(),
+    reference: z.string().optional(),
+  }).passthrough()).default([]),
+  subtotal:        z.number().nonnegative().default(0),
+  discount:        z.number().nonnegative().default(0),
+  loyaltyDiscount: z.number().nonnegative().default(0),
+  igv:             z.number().nonnegative().default(0),
+  igvRate:         z.number().min(0).max(1).default(0.18),
+  total:           z.number().nonnegative().default(0),
+}).passthrough()
 
 export default async function salesRoutes(fastify) {
 
@@ -54,10 +78,18 @@ export default async function salesRoutes(fastify) {
 
   // POST /api/sales
   fastify.post('/sales', { preHandler: PRE }, async (req, reply) => {
-    const body = req.body
-    if (!body?.items?.length) return sendError(reply, 'La venta debe tener al menos un ítem')
-    if (!body?.payments?.length && (body?.total ?? 0) > 0) {
+    const parsed = saleSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Datos de venta inválidos', details: parsed.error.flatten() })
+    }
+    const body = parsed.data
+    if (!body.payments.length && body.total > 0) {
       return sendError(reply, 'La venta debe tener al menos un método de pago')
+    }
+
+    const paid = HALF_UP(body.payments.reduce((sum, payment) => sum + payment.amount, 0))
+    if (Math.abs(paid - HALF_UP(body.total)) > 0.01) {
+      return sendError(reply, 'La suma de los pagos debe coincidir con el total de la venta')
     }
 
     // ── Validar descuento máximo por ítem ────────────────────────────────────
@@ -65,9 +97,11 @@ export default async function salesRoutes(fastify) {
     // El límite por tenant (ej: 50%) lo valida el frontend; aquí solo bloqueamos
     // payloads manipulados que intenten superar el máximo absoluto.
     for (const item of body.items ?? []) {
-      if (!item.unitPrice || item.unitPrice <= 0) continue
       const gross      = item.quantity * item.unitPrice
-      const discounted = (item.discount || 0) + (item.campaignDiscount || 0)
+      const discounted = item.totalDiscount ?? ((item.discount || 0) + (item.campaignDiscount || 0))
+      if (discounted > gross) {
+        return sendError(reply, `El descuento de "${item.productName || 'un ítem'}" no puede superar su importe`)
+      }
       const pct        = gross > 0 ? (discounted / gross) * 100 : 0
       if (pct > DISCOUNT.HARD_MAX_PCT) {
         return sendError(reply, `El descuento de "${item.productName || 'un ítem'}" supera el máximo permitido (${DISCOUNT.HARD_MAX_PCT}%)`)
@@ -77,11 +111,43 @@ export default async function salesRoutes(fastify) {
     const tenantId = req.tenantId
     const userId   = req.user.id
 
-    const sale = await prisma.$transaction(async (tx) => {
+    let sale
+    try {
+      sale = await prisma.$transaction(async (tx) => {
 
       // ── 1. Generar número de comprobante ─────────────────────────────────
       const tipo          = body.tipoComprobante || 'ticket'
       const invoiceNumber = await nextInvoiceNumber(tx, tenantId, tipo)
+
+      const stockItems = body.items.filter(item =>
+        !item.isBundle && item.stockControlUsed !== 'bundle' && item.type !== 'bundle'
+      )
+      await lockProducts(tx, tenantId, stockItems.map(item => item.productId))
+
+      let reserve = null
+      if (body.stockReserveId) {
+        reserve = await tx.stockReserve.findFirst({
+          where: {
+            id: body.stockReserveId,
+            tenantId,
+            userId,
+            expiresAt: { gt: new Date() },
+          },
+          include: { items: true },
+        })
+        if (!reserve) throw new StockInsufficientError('la reserva de stock')
+
+        const reservedByProduct = new Map(reserve.items.map(item => [item.productId, item.quantity]))
+        const requestedByProduct = new Map()
+        for (const item of stockItems) {
+          requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + item.quantity)
+        }
+        for (const [productId, quantity] of requestedByProduct) {
+          if ((reservedByProduct.get(productId) || 0) < quantity) {
+            throw new StockInsufficientError('la reserva de stock')
+          }
+        }
+      }
 
       // ── 2. Resolver cliente ──────────────────────────────────────────────
       const client = body.clientId
@@ -111,10 +177,10 @@ export default async function salesRoutes(fastify) {
         }
 
         const product = productMap.get(item.productId)
-        if (!product) continue
+        if (!product) throw new StockInsufficientError(item.productName || item.productId)
 
         const { batchAllocations, stockControlUsed } = await allocateStock({
-          product, item, invoiceNumber, userId,
+          product, item, invoiceNumber, userId, db: tx,
         })
 
         saleMovements.push({
@@ -207,6 +273,8 @@ export default async function salesRoutes(fastify) {
         }
       }
 
+      if (reserve) await tx.stockReserve.delete({ where: { id: reserve.id } })
+
       // ── 6. Deuda a crédito ───────────────────────────────────────────────
       if (client) {
         const creditPmt = body.payments?.find(p => p.method === 'credito')
@@ -261,7 +329,11 @@ export default async function salesRoutes(fastify) {
       }
 
       return newSale
-    })
+      })
+    } catch (error) {
+      if (error instanceof StockInsufficientError) return send409(reply, error.message)
+      throw error
+    }
 
     return sendOk(reply, sale, null, 201)
   })
@@ -307,6 +379,7 @@ export default async function salesRoutes(fastify) {
 
         await restoreStock({
           product,
+          db: tx,
           item: {
             variantId:        item.variantId,
             quantity:         item.quantity,

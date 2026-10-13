@@ -39,6 +39,10 @@ import bcrypt from 'bcryptjs'
 
 // ─── Setup del servidor de test ───────────────────────────────────────────────
 let app
+const sessionToken = (response) => {
+  const cookie = response.headers['set-cookie']
+  return decodeURIComponent(cookie.match(/mm_session=([^;]+)/)[1])
+}
 
 beforeAll(async () => {
   app = Fastify()
@@ -96,7 +100,9 @@ describe('POST /auth/login — superadmin', () => {
     })
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
-    expect(body).toHaveProperty('token')
+    expect(body).not.toHaveProperty('token')
+    expect(res.headers['set-cookie']).toContain('mm_session=')
+    expect(res.headers['set-cookie']).toContain('HttpOnly')
     expect(body.user.role).toBe('superadmin')
     expect(body.user.tenantId).toBeNull()
     expect(body.user.plan).toBe('enterprise')
@@ -131,8 +137,7 @@ describe('POST /auth/login — superadmin', () => {
       url:    '/auth/login',
       payload: { username: 'superadmin', password: 'superadmin123', tenantSlug: 'superadmin' },
     })
-    const { token } = JSON.parse(res.body)
-    const decoded = app.jwt.decode(token)
+    const decoded = app.jwt.decode(sessionToken(res))
     expect(decoded.role).toBe('superadmin')
     expect(decoded.id).toBe('superadmin')
     expect(decoded.tenantId).toBeNull()
@@ -251,7 +256,8 @@ describe('POST /auth/login — tenant user', () => {
     })
     expect(res.statusCode).toBe(200)
     const body = JSON.parse(res.body)
-    expect(body).toHaveProperty('token')
+    expect(body).not.toHaveProperty('token')
+    expect(res.headers['set-cookie']).toContain('mm_session=')
     expect(body.user.role).toBe('admin')
     expect(body.user.tenantId).toBe('tenant-uuid-123')
     expect(body.user.tenantSlug).toBe('bodega-test')

@@ -1,10 +1,11 @@
 import { z }   from 'zod'
 import prisma   from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, send404 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 // Acepta los type names del frontend: campaign | promotion | volume | line
 const VALID_TYPES = ['campaign', 'promotion', 'volume', 'line', 'porcentaje', 'monto_fijo', 'compra_lleva', 'bogo']
@@ -115,7 +116,7 @@ export default async function campaignsRoutes(fastify) {
     return sendOk(reply, campaigns, { total: campaigns.length })
   })
 
-  fastify.post('/campaigns', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/campaigns', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const parsed = campaignSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
 
@@ -125,7 +126,7 @@ export default async function campaignsRoutes(fastify) {
     return sendOk(reply, campaign, null, 201)
   })
 
-  fastify.put('/campaigns/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/campaigns/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.discountCampaign.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
@@ -169,7 +170,7 @@ export default async function campaignsRoutes(fastify) {
     return sendOk(reply, campaign)
   })
 
-  fastify.patch('/campaigns/:id/toggle', { preHandler: PRE }, async (req, reply) => {
+  fastify.patch('/campaigns/:id/toggle', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.discountCampaign.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
@@ -182,7 +183,7 @@ export default async function campaignsRoutes(fastify) {
     return sendOk(reply, { id: campaign.id, isActive: campaign.isActive })
   })
 
-  fastify.delete('/campaigns/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/campaigns/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.discountCampaign.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })

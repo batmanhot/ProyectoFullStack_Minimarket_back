@@ -134,6 +134,7 @@ export default async function returnsRoutes(fastify) {
 
         await restoreStock({
           product,
+          db: tx,
           item: {
             variantId:        null,
             quantity:         item.quantity,

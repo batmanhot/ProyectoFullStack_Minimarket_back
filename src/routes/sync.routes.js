@@ -76,7 +76,7 @@ export default async function syncRoutes(fastify) {
                 })
                 if (!product) continue
                 const { batchAllocations, stockControlUsed } = await allocateStock({
-                  product, item, invoiceNumber, userId: req.user.id,
+                  product, item, invoiceNumber, userId: req.user.id, db: tx,
                 })
                 await tx.stockMovement.create({
                   data: {
@@ -177,7 +177,7 @@ export default async function syncRoutes(fastify) {
                 if (item.isBundle || item.stockControlUsed === 'bundle') continue
                 const product = await tx.product.findFirst({ where: { id: item.productId }, include: { batches: true } })
                 if (!product) continue
-                await restoreStock({ product, item: { variantId: item.variantId, quantity: item.quantity, stockControlUsed: item.stockControlUsed, batchAllocations: item.batchAllocations } })
+                await restoreStock({ product, db: tx, item: { variantId: item.variantId, quantity: item.quantity, stockControlUsed: item.stockControlUsed, batchAllocations: item.batchAllocations } })
               }
               await tx.sale.update({
                 where: { id: sale.id },

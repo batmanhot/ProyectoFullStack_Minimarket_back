@@ -4,7 +4,9 @@ import { z }   from 'zod'
 import prisma   from '../db.js'
 import { config } from '../config.js'
 import { requireAuth } from '../middlewares/auth.js'
+import { loginRateLimit } from '../middlewares/rateLimit.js'
 import { sendOk, sendError } from '../utils/response.js'
+import { clearSessionCookie, setSessionCookie } from '../utils/session.js'
 
 // Comparación de contraseña en tiempo constante — previene timing attacks.
 // Se hashea con SHA-256 para igualar longitudes antes de timingSafeEqual.
@@ -22,7 +24,7 @@ const loginSchema = z.object({
 export default async function authRoutes(fastify) {
 
   // POST /api/auth/login
-  fastify.post('/auth/login', async (req, reply) => {
+  fastify.post('/auth/login', { preHandler: [loginRateLimit] }, async (req, reply) => {
     const parsed = loginSchema.safeParse(req.body)
     if (!parsed.success) {
       return sendError(reply, 'Datos de inicio de sesión inválidos')
@@ -42,8 +44,8 @@ export default async function authRoutes(fastify) {
         tenantSlug: null,
         plan:       'enterprise',
       })
+      setSessionCookie(reply, token)
       return reply.send({
-        token,
         user: {
           id:         'superadmin',
           fullName:   'Super Administrador',
@@ -79,6 +81,7 @@ export default async function authRoutes(fastify) {
       tenantId:   tenant.id,
       tenantSlug: tenant.slug,
       plan:       tenant.plan,
+      sessionVersion: user.sessionVersion ?? 0,
     })
 
     // Registrar evento de login para historial en SuperAdmin
@@ -92,8 +95,8 @@ export default async function authRoutes(fastify) {
       },
     }).catch(() => {})   // fire-and-forget; no bloquea la respuesta
 
+    setSessionCookie(reply, token)
     return reply.send({
-      token,
       user: {
         id:         user.id,
         fullName:   user.fullName,
@@ -107,8 +110,9 @@ export default async function authRoutes(fastify) {
     })
   })
 
-  // POST /api/auth/logout  (el frontend borra el token en localStorage)
+  // POST /api/auth/logout
   fastify.post('/auth/logout', { preHandler: [requireAuth] }, async (req, reply) => {
+    clearSessionCookie(reply)
     return sendOk(reply, null)
   })
 }

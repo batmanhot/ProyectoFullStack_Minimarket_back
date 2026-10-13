@@ -13,6 +13,12 @@ const future = (days) => new Date(Date.now() + days * 86_400_000)
 
 // ─────────────────────────────────────────────────────────────────────────────
 async function main() {
+  const mode = (process.env.APP_MODE || process.env.NODE_ENV || 'development').toLowerCase()
+  if (!['development', 'demo', 'test'].includes(mode)) {
+    console.log(`\n  Seed omitido: APP_MODE/NODE_ENV es "${mode}". Los datos de demostración no se cargan en producción.\n`)
+    return
+  }
+
   console.log('\n  🌱 Iniciando seed...\n')
 
   // ── 1. PlanConfig ──────────────────────────────────────────────────────────
@@ -20,30 +26,34 @@ async function main() {
     {
       plan: 'trial',
       priceMonthly: 0, priceQuarterly: 0, priceSemiannual: 0, priceAnnual: 0,
-      maxProducts: 50, maxUsers: 1, maxSalesPerDay: 30,
-      hasSunat: false, hasMultiStore: false, hasReports: false,
-      hasLoyalty: false, hasApiAccess: false,
+      products: 50, users: 1, warehouses: 1, suppliers: 0, customers: 50,
+      ordersPerMonth: 30, storageGB: 1, supportType: 'email',
+      apiAccess: false, multiCompany: false, advancedExport: false,
+      advancedReports: false, exportData: false, multiCash: false,
     },
     {
       plan: 'basic',
       priceMonthly: 49, priceQuarterly: 129, priceSemiannual: 239, priceAnnual: 449,
-      maxProducts: 500, maxUsers: 3, maxSalesPerDay: 200,
-      hasSunat: true, hasMultiStore: false, hasReports: true,
-      hasLoyalty: false, hasApiAccess: false,
+      products: 500, users: 3, warehouses: 1, suppliers: 20, customers: 1000,
+      ordersPerMonth: 200, storageGB: 5, supportType: 'email',
+      apiAccess: false, multiCompany: false, advancedExport: false,
+      advancedReports: true, exportData: true, multiCash: false,
     },
     {
       plan: 'pro',
       priceMonthly: 89, priceQuarterly: 239, priceSemiannual: 449, priceAnnual: 849,
-      maxProducts: 2000, maxUsers: 10, maxSalesPerDay: 1000,
-      hasSunat: true, hasMultiStore: true, hasReports: true,
-      hasLoyalty: true, hasApiAccess: false,
+      products: 2000, users: 10, warehouses: 5, suppliers: 100, customers: 10000,
+      ordersPerMonth: 1000, storageGB: 25, supportType: 'priority',
+      apiAccess: false, multiCompany: true, advancedExport: true,
+      advancedReports: true, exportData: true, multiCash: true,
     },
     {
       plan: 'enterprise',
       priceMonthly: 149, priceQuarterly: 399, priceSemiannual: 749, priceAnnual: 1399,
-      maxProducts: 99999, maxUsers: 99999, maxSalesPerDay: 99999,
-      hasSunat: true, hasMultiStore: true, hasReports: true,
-      hasLoyalty: true, hasApiAccess: true,
+      products: null, users: null, warehouses: null, suppliers: null, customers: null,
+      ordersPerMonth: null, storageGB: null, supportType: 'dedicated',
+      apiAccess: true, multiCompany: true, advancedExport: true,
+      advancedReports: true, exportData: true, multiCash: true,
     },
   ]
 

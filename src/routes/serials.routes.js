@@ -14,11 +14,12 @@
  */
 import { z }           from 'zod'
 import prisma          from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 // ── Helpers exportados para uso en sales.routes.js ───────────────────────────
 export async function markSerialSold({ tenantId, serialNumber, saleId, invoiceNumber }) {
@@ -78,7 +79,7 @@ export default async function serialsRoutes(fastify) {
   })
 
   // POST /api/products/:productId/serials  — registrar uno o varios seriales nuevos
-  fastify.post('/products/:productId/serials', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/products/:productId/serials', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       // Permite registrar un solo serial o un lote (array)
       serials: z.array(z.object({
@@ -175,7 +176,7 @@ export default async function serialsRoutes(fastify) {
   })
 
   // PATCH /api/products/:productId/serials/:id  — cambiar estado manualmente
-  fastify.patch('/products/:productId/serials/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.patch('/products/:productId/serials/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       status: z.enum(['disponible', 'reservado', 'dado_baja']),
       notes:  z.string().optional(),
@@ -212,7 +213,7 @@ export default async function serialsRoutes(fastify) {
   })
 
   // DELETE /api/products/:productId/serials/:id
-  fastify.delete('/products/:productId/serials/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/products/:productId/serials/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const serial = await prisma.productSerial.findFirst({
       where: { id: req.params.id, productId: req.params.productId, tenantId: req.tenantId },
     })

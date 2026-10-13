@@ -1,10 +1,11 @@
 import { z }   from 'zod'
 import prisma   from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
 
 export default async function purchasesRoutes(fastify) {
@@ -44,7 +45,7 @@ export default async function purchasesRoutes(fastify) {
   })
 
   // POST /api/purchases
-  fastify.post('/purchases', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/purchases', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       supplierId:   z.string().uuid().optional(),
       supplierName: z.string().default(''),
@@ -142,7 +143,7 @@ export default async function purchasesRoutes(fastify) {
   })
 
   // PATCH /api/purchases/:id/status
-  fastify.patch('/purchases/:id/status', { preHandler: PRE }, async (req, reply) => {
+  fastify.patch('/purchases/:id/status', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const { status } = req.body
     if (!['confirmada', 'recibida', 'anulada'].includes(status)) {
       return sendError(reply, 'Estado inválido. Use: confirmada | recibida | anulada')

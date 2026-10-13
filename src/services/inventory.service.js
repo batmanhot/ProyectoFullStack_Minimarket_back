@@ -7,36 +7,61 @@ import { LOYALTY } from '../config/businessRules.js'
 
 const HALF_UP = (n) => Math.floor(Number(n) * 100 + 0.5) / 100
 
+export class StockInsufficientError extends Error {
+  constructor(productName = 'Producto') {
+    super(`Stock insuficiente para ${productName}`)
+    this.name = 'StockInsufficientError'
+  }
+}
+
+/**
+ * Locks product rows in a deterministic order. Every operation that reserves
+ * or consumes stock uses this lock, preventing concurrent cash registers from
+ * both validating the same units before either transaction writes them.
+ */
+export async function lockProducts(db, tenantId, productIds) {
+  const ids = [...new Set(productIds.filter(Boolean))].sort()
+  for (const id of ids) {
+    await db.$queryRaw`
+      SELECT id FROM products
+      WHERE id = ${id} AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `
+  }
+}
+
 // ── Descuenta stock de un ítem y devuelve batch allocations ──────────────────
-export async function allocateStock({ product, item, invoiceNumber, userId }) {
+export async function allocateStock({ product, item, invoiceNumber, userId, db = prisma }) {
   const { stockControl, batches = [] } = product
   const qty = item.quantity
 
   // Variante con stock propio
   if (item.variantId) {
-    const variant = await prisma.productVariant.findUnique({ where: { id: item.variantId } })
-    if (variant) {
-      const prev = variant.stock ?? 0
-      const next = Math.max(0, prev - qty)
-      await prisma.productVariant.update({ where: { id: variant.id }, data: { stock: next } })
-      return { batchAllocations: [], stockControlUsed: 'simple', stockDelta: -qty }
-    }
+    const updated = await db.productVariant.updateMany({
+      where: { id: item.variantId, productId: product.id, stock: { gte: qty } },
+      data:  { stock: { decrement: qty } },
+    })
+    if (updated.count !== 1) throw new StockInsufficientError(product.name)
+    return { batchAllocations: [], stockControlUsed: 'simple', stockDelta: -qty }
   }
 
   // Número de serie
   if (stockControl === 'serie') {
     // Marcar el serial específico como vendido (sin saleId aún — se actualiza después de crear la venta)
     if (item.selectedSerial) {
-      await prisma.productSerial.updateMany({
+      const updated = await db.productSerial.updateMany({
         where: { productId: product.id, serialNumber: item.selectedSerial, status: 'disponible' },
         data:  { status: 'vendido', invoiceNumber, soldAt: new Date() },
       })
+      if (updated.count !== 1) throw new StockInsufficientError(product.name)
+    } else {
+      throw new StockInsufficientError(product.name)
     }
     // Stock = count de seriales disponibles (fuente de verdad)
-    const disponibles = await prisma.productSerial.count({
+    const disponibles = await db.productSerial.count({
       where: { productId: product.id, status: 'disponible' },
     })
-    await prisma.product.update({ where: { id: product.id }, data: { stock: disponibles } })
+    await db.product.update({ where: { id: product.id }, data: { stock: disponibles } })
     return {
       batchAllocations: item.selectedSerial ? [{ batchNumber: item.selectedSerial, quantity: 1 }] : [],
       stockControlUsed: 'serie',
@@ -72,38 +97,43 @@ export async function allocateStock({ product, item, invoiceNumber, userId }) {
       remaining -= take
 
       const newQty = batch.quantity - take
-      await prisma.productBatch.update({
-        where: { id: batch.id },
+      const updated = await db.productBatch.updateMany({
+        where: { id: batch.id, status: 'activo', quantity: { gte: take } },
         data:  { quantity: newQty, status: newQty <= 0 ? 'agotado' : batch.status },
       })
+      if (updated.count !== 1) throw new StockInsufficientError(product.name)
     }
 
+    if (remaining > 0) throw new StockInsufficientError(product.name)
+
     // Recalcular stock total del producto sumando lotes activos
-    const updatedBatches = await prisma.productBatch.findMany({ where: { productId: product.id } })
+    const updatedBatches = await db.productBatch.findMany({ where: { productId: product.id } })
     const newStock = updatedBatches
       .filter(b => b.status === 'activo')
       .reduce((s, b) => s + (b.quantity ?? 0), 0)
-    await prisma.product.update({ where: { id: product.id }, data: { stock: newStock } })
+    await db.product.update({ where: { id: product.id }, data: { stock: newStock } })
 
     return { batchAllocations: allocations, stockControlUsed: stockControl, stockDelta: -(qty - remaining) }
   }
 
   // Simple
-  const prev = product.stock
-  const next = Math.max(0, prev - qty)
-  await prisma.product.update({ where: { id: product.id }, data: { stock: next } })
+  const updated = await db.product.updateMany({
+    where: { id: product.id, stock: { gte: qty } },
+    data:  { stock: { decrement: qty } },
+  })
+  if (updated.count !== 1) throw new StockInsufficientError(product.name)
   return { batchAllocations: [], stockControlUsed: 'simple', stockDelta: -qty }
 }
 
 // ── Restaura stock al cancelar una venta ─────────────────────────────────────
-export async function restoreStock({ product, item }) {
+export async function restoreStock({ product, item, db = prisma }) {
   const { stockControl } = product
   const qty = item.quantity
 
   if (item.variantId) {
-    const variant = await prisma.productVariant.findUnique({ where: { id: item.variantId } })
+    const variant = await db.productVariant.findUnique({ where: { id: item.variantId } })
     if (variant) {
-      await prisma.productVariant.update({
+      await db.productVariant.update({
         where: { id: variant.id },
         data:  { stock: (variant.stock ?? 0) + qty },
       })
@@ -115,35 +145,35 @@ export async function restoreStock({ product, item }) {
   if (item.stockControlUsed === 'serie' && item.batchAllocations?.length) {
     const serialNumber = item.batchAllocations[0].batchNumber
     if (serialNumber) {
-      await prisma.productSerial.updateMany({
+      await db.productSerial.updateMany({
         where: { productId: product.id, serialNumber },
         data:  { status: 'disponible', saleId: '', invoiceNumber: '', soldAt: null },
       })
     }
-    const disponibles = await prisma.productSerial.count({
+    const disponibles = await db.productSerial.count({
       where: { productId: product.id, status: 'disponible' },
     })
-    await prisma.product.update({ where: { id: product.id }, data: { stock: disponibles } })
+    await db.product.update({ where: { id: product.id }, data: { stock: disponibles } })
     return
   }
 
   if ((stockControl === 'lote_fefo' || stockControl === 'lote_fifo') && item.batchAllocations?.length) {
     for (const alloc of item.batchAllocations) {
-      const batch = await prisma.productBatch.findUnique({ where: { id: alloc.batchId } })
+      const batch = await db.productBatch.findUnique({ where: { id: alloc.batchId } })
       if (!batch) continue
       const newQty = (batch.quantity ?? 0) + alloc.quantity
-      await prisma.productBatch.update({
+      await db.productBatch.update({
         where: { id: batch.id },
         data:  { quantity: newQty, status: newQty > 0 && batch.status === 'agotado' ? 'activo' : batch.status },
       })
     }
-    const updatedBatches = await prisma.productBatch.findMany({ where: { productId: product.id } })
+    const updatedBatches = await db.productBatch.findMany({ where: { productId: product.id } })
     const newStock = updatedBatches.filter(b => b.status === 'activo').reduce((s, b) => s + (b.quantity ?? 0), 0)
-    await prisma.product.update({ where: { id: product.id }, data: { stock: newStock } })
+    await db.product.update({ where: { id: product.id }, data: { stock: newStock } })
     return
   }
 
-  await prisma.product.update({
+  await db.product.update({
     where: { id: product.id },
     data:  { stock: (product.stock ?? 0) + qty },
   })

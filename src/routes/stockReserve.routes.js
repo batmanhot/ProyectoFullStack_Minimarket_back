@@ -21,6 +21,7 @@ import prisma          from '../db.js'
 import { requireAuth }   from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, send404 } from '../utils/response.js'
+import { lockProducts } from '../services/inventory.service.js'
 
 const PRE      = [requireAuth, resolveTenant]
 const TTL_MS   = 10 * 60 * 1000   // 10 minutos
@@ -36,13 +37,13 @@ async function cleanExpiredReserves(tenantId) {
 // ── Stock disponible = stock real − reservas activas de OTROS cajeros ─────────
 // productId vive en StockReserveItem (tabla hija), no en StockReserve.
 // Se agrega sobre StockReserveItem filtrando la reserva padre por tenantId/expiresAt.
-async function getAvailableStock(tenantId, productId, excludeReserveId = null) {
-  const product = await prisma.product.findFirst({
+async function getAvailableStock(db, tenantId, productId, excludeReserveId = null) {
+  const product = await db.product.findFirst({
     where: { id: productId, tenantId },
   })
   if (!product) return 0
 
-  const reservedByOthers = await prisma.stockReserveItem.aggregate({
+  const reservedByOthers = await db.stockReserveItem.aggregate({
     where: {
       productId,
       reserve: {
@@ -56,6 +57,14 @@ async function getAvailableStock(tenantId, productId, excludeReserveId = null) {
 
   const reserved = reservedByOthers._sum.quantity || 0
   return Math.max(0, product.stock - reserved)
+}
+
+function aggregateItems(items) {
+  const quantities = new Map()
+  for (const { productId, quantity } of items) {
+    quantities.set(productId, (quantities.get(productId) || 0) + quantity)
+  }
+  return [...quantities].map(([productId, quantity]) => ({ productId, quantity }))
 }
 
 export default async function stockReserveRoutes(fastify) {
@@ -74,89 +83,81 @@ export default async function stockReserveRoutes(fastify) {
       return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
     }
 
-    const { reserveId, items } = parsed.data
+    const { reserveId } = parsed.data
+    const items = aggregateItems(parsed.data.items)
     const tenantId = req.tenantId
-    const userId   = req.user.id
+    const userId = req.user.id
     const expiresAt = new Date(Date.now() + TTL_MS)
 
-    await cleanExpiredReserves(tenantId)
-
-    // Verificar disponibilidad de cada ítem antes de reservar
-    const conflicts = []
-    for (const item of items) {
-      const available = await getAvailableStock(
-        tenantId,
-        item.productId,
-        reserveId || undefined   // excluir la reserva propia si se está renovando
-      )
-      if (available < item.quantity) {
-        const product = await prisma.product.findFirst({
-          where:  { id: item.productId, tenantId },
-          select: { name: true, stock: true },
-        })
-        conflicts.push({
-          productId:  item.productId,
-          productName:product?.name || item.productId,
-          requested:  item.quantity,
-          available,
-        })
-      }
-    }
-
-    if (conflicts.length > 0) {
-      return reply.code(409).send({
-        error:     'Stock insuficiente para completar la reserva',
-        conflicts,
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.stockReserve.deleteMany({
+        where: { tenantId, expiresAt: { lt: new Date() } },
       })
-    }
 
-    // Upsert atómico: crea o renueva la reserva
-    if (reserveId) {
-      // Renovar reserva existente
-      const existing = await prisma.stockReserve.findFirst({
-        where: { id: reserveId, tenantId },
-      })
-      if (!existing) {
-        return send404(reply, 'Reserva')
+      // Serializa reservas concurrentes del mismo producto antes de validar.
+      await lockProducts(tx, tenantId, items.map(item => item.productId))
+
+      if (reserveId) {
+        const existing = await tx.stockReserve.findFirst({
+          where: { id: reserveId, tenantId, userId },
+        })
+        if (!existing) return { notFound: true }
       }
 
-      // Eliminar ítems anteriores y reemplazar
-      await prisma.$transaction([
-        prisma.stockReserveItem.deleteMany({ where: { reserveId } }),
-        ...items.map(item =>
-          prisma.stockReserveItem.create({ data: { reserveId, ...item } })
-        ),
-        prisma.stockReserve.update({
-          where: { id: reserveId },
-          data:  { expiresAt, updatedAt: new Date() },
+      const conflicts = []
+      for (const item of items) {
+        const available = await getAvailableStock(tx, tenantId, item.productId, reserveId)
+        if (available < item.quantity) {
+          const product = await tx.product.findFirst({
+            where: { id: item.productId, tenantId },
+            select: { name: true },
+          })
+          conflicts.push({
+            productId: item.productId,
+            productName: product?.name || item.productId,
+            requested: item.quantity,
+            available,
+          })
+        }
+      }
+      if (conflicts.length > 0) return { conflicts }
+
+      if (reserveId) {
+        await tx.stockReserveItem.deleteMany({ where: { reserveId } })
+        await tx.stockReserveItem.createMany({
+          data: items.map(item => ({ reserveId, ...item })),
+        })
+        return {
+          reserve: await tx.stockReserve.update({
+            where: { id: reserveId },
+            data: { expiresAt, updatedAt: new Date() },
+            include: { items: true },
+          }),
+        }
+      }
+
+      return {
+        reserve: await tx.stockReserve.create({
+          data: { tenantId, userId, expiresAt, items: { create: items } },
+          include: { items: true },
         }),
-      ])
-
-      const reserve = await prisma.stockReserve.findUnique({
-        where:   { id: reserveId },
-        include: { items: true },
-      })
-      return sendOk(reply, reserve)
-    }
-
-    // Crear reserva nueva
-    const reserve = await prisma.stockReserve.create({
-      data: {
-        tenantId,
-        userId,
-        expiresAt,
-        items: { create: items },
-      },
-      include: { items: true },
+        created: true,
+      }
     })
 
-    return sendOk(reply, reserve, null, 201)
+    if (result.notFound) return send404(reply, 'Reserva')
+    if (result.conflicts) {
+      return reply.code(409).send({
+        error: 'Stock insuficiente para completar la reserva',
+        conflicts: result.conflicts,
+      })
+    }
+    return sendOk(reply, result.reserve, null, result.created ? 201 : 200)
   })
-
   // DELETE /api/stock-reserve/:id — libera la reserva (cancelar carrito o venta completada)
   fastify.delete('/stock-reserve/:id', { preHandler: PRE }, async (req, reply) => {
     const reserve = await prisma.stockReserve.findFirst({
-      where: { id: req.params.id, tenantId: req.tenantId },
+      where: { id: req.params.id, tenantId: req.tenantId, userId: req.user.id },
     })
     if (!reserve) {
       // Si ya no existe (expiró o fue eliminada), responder OK igualmente
@@ -192,10 +193,19 @@ export default async function stockReserveRoutes(fastify) {
     const { excludeReserveId } = req.query
     await cleanExpiredReserves(req.tenantId)
 
+    // Solo la reserva propia puede excluirse del cálculo de disponibilidad.
+    const ownReserve = excludeReserveId
+      ? await prisma.stockReserve.findFirst({
+          where: { id: excludeReserveId, tenantId: req.tenantId, userId: req.user.id },
+          select: { id: true },
+        })
+      : null
+
     const available = await getAvailableStock(
+      prisma,
       req.tenantId,
       req.params.productId,
-      excludeReserveId || undefined
+      ownReserve?.id
     )
 
     const product = await prisma.product.findFirst({

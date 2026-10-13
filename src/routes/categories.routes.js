@@ -1,10 +1,11 @@
 import { z }    from 'zod'
 import prisma    from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 // El slug se expone como "id" en la respuesta para compatibilidad con el frontend
 const toDto = (c) => ({ id: c.slug, slug: c.slug, name: c.name, description: c.description, color: c.color, icon: c.icon, isActive: c.isActive, createdAt: c.createdAt })
@@ -24,7 +25,7 @@ export default async function categoriesRoutes(fastify) {
   })
 
   // POST /api/categories
-  fastify.post('/categories', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/categories', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       name:        z.string().min(1),
       slug:        z.string().optional(),
@@ -53,7 +54,7 @@ export default async function categoriesRoutes(fastify) {
   })
 
   // PUT /api/categories/:slug
-  fastify.put('/categories/:slug', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/categories/:slug', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       name:        z.string().min(1).optional(),
       description: z.string().optional(),
@@ -72,7 +73,7 @@ export default async function categoriesRoutes(fastify) {
   })
 
   // DELETE /api/categories/:slug
-  fastify.delete('/categories/:slug', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/categories/:slug', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const cat = await prisma.category.findUnique({ where: { tenantId_slug: { tenantId: req.tenantId, slug: req.params.slug } } })
     if (!cat) return send404(reply, 'Categoría')
 

@@ -15,11 +15,12 @@
  */
 import { z }           from 'zod'
 import prisma          from '../db.js'
-import { requireAuth }   from '../middlewares/auth.js'
+import { requireAuth, requireAdmin } from '../middlewares/auth.js'
 import { resolveTenant } from '../middlewares/tenant.js'
 import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE = [requireAuth, resolveTenant]
+const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
 
 export default async function locationsRoutes(fastify) {
 
@@ -38,7 +39,7 @@ export default async function locationsRoutes(fastify) {
   })
 
   // POST /api/locations
-  fastify.post('/locations', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/locations', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       name:        z.string().min(1),
       description: z.string().default(''),
@@ -59,7 +60,7 @@ export default async function locationsRoutes(fastify) {
   })
 
   // PUT /api/locations/:id
-  fastify.put('/locations/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.put('/locations/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       name:        z.string().min(1).optional(),
       description: z.string().optional(),
@@ -89,7 +90,7 @@ export default async function locationsRoutes(fastify) {
   })
 
   // DELETE /api/locations/:id  (soft delete)
-  fastify.delete('/locations/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/locations/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const existing = await prisma.location.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })
@@ -133,7 +134,7 @@ export default async function locationsRoutes(fastify) {
   // ── TRANSFERENCIAS ──────────────────────────────────────────────────────────
 
   // POST /api/locations/transfer — transferir stock entre ubicaciones
-  fastify.post('/locations/transfer', { preHandler: PRE }, async (req, reply) => {
+  fastify.post('/locations/transfer', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const schema = z.object({
       fromId:    z.string().uuid(),
       toId:      z.string().uuid(),
@@ -235,7 +236,7 @@ export default async function locationsRoutes(fastify) {
   })
 
   // DELETE /api/locations/transfers/:id — anular transferencia (revierte stock)
-  fastify.delete('/locations/transfers/:id', { preHandler: PRE }, async (req, reply) => {
+  fastify.delete('/locations/transfers/:id', { preHandler: PRE_ADMIN }, async (req, reply) => {
     const transfer = await prisma.stockTransfer.findFirst({
       where: { id: req.params.id, tenantId: req.tenantId },
     })

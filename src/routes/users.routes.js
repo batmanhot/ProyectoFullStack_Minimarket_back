@@ -6,11 +6,18 @@ import { sendOk, sendError, send404, send409 } from '../utils/response.js'
 
 const PRE       = [requireAuth, resolveTenant]
 const PRE_ADMIN = [requireAuth, resolveTenant, requireAdmin]
+const PRIVILEGED_ROLES = new Set(['admin', 'gerente'])
+const passwordSchema = z.string().min(12).max(128)
+
+// Un gerente administra al personal operativo, pero no puede escalar ni
+// bloquear cuentas administrativas.
+const managerCanManage = (actorRole, targetRole, nextRole) =>
+  actorRole !== 'gerente' || (!PRIVILEGED_ROLES.has(targetRole) && !PRIVILEGED_ROLES.has(nextRole))
 
 const userCreateSchema = z.object({
   fullName: z.string().min(2),
   username: z.string().min(3),
-  password: z.string().min(6),
+  password: passwordSchema,
   role:     z.enum(['admin', 'gerente', 'supervisor', 'cajero']).default('cajero'),
   email:    z.string().email().optional().or(z.literal('')).default(''),
 })
@@ -69,6 +76,10 @@ export default async function usersRoutes(fastify) {
     if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
     const d = parsed.data
 
+    if (!managerCanManage(req.user.role, null, d.role)) {
+      return sendError(reply, 'Un gerente no puede crear cuentas administrativas', 403)
+    }
+
     const existing = await prisma.user.findUnique({
       where: { tenantId_username: { tenantId: req.tenantId, username: d.username } },
     })
@@ -104,6 +115,10 @@ export default async function usersRoutes(fastify) {
     const parsed = userUpdateSchema.safeParse(req.body)
     if (!parsed.success) return reply.code(400).send({ error: 'Datos inválidos', details: parsed.error.flatten() })
 
+    if (!managerCanManage(req.user.role, existing.role, parsed.data.role ?? existing.role)) {
+      return sendError(reply, 'Un gerente no puede modificar cuentas administrativas', 403)
+    }
+
     // No permitir que el último admin se desactive
     if (parsed.data.isActive === false || (parsed.data.role && parsed.data.role !== 'admin')) {
       if (existing.role === 'admin') {
@@ -116,9 +131,13 @@ export default async function usersRoutes(fastify) {
       }
     }
 
+    const securityChanged = parsed.data.isActive !== undefined || parsed.data.role !== undefined
     const user = await prisma.user.update({
       where: { id: req.params.id },
-      data:  parsed.data,
+      data:  {
+        ...parsed.data,
+        ...(securityChanged && { sessionVersion: { increment: 1 } }),
+      },
       select: {
         id: true, fullName: true, username: true, role: true,
         email: true, isActive: true, updatedAt: true,
@@ -131,7 +150,7 @@ export default async function usersRoutes(fastify) {
   fastify.patch('/users/:id/password', { preHandler: PRE }, async (req, reply) => {
     const schema = z.object({
       currentPassword: z.string().optional(),
-      newPassword:     z.string().min(6),
+      newPassword:     passwordSchema,
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) return sendError(reply, 'La nueva contraseña debe tener al menos 6 caracteres')
@@ -144,19 +163,27 @@ export default async function usersRoutes(fastify) {
     const isSelf  = req.user.id === target.id
     const isAdmin = ['admin', 'gerente'].includes(req.user.role)
 
-    // Un usuario solo puede cambiar su propia contraseña (verificando la actual)
-    // Un admin puede cambiar la de cualquiera sin verificar
-    if (isSelf && !isAdmin && parsed.data.currentPassword) {
+    // Todo usuario que cambia su propia contraseña debe acreditar la actual.
+    // Un admin/gerente solo puede omitirla al restablecer la de otra persona.
+    if (isSelf) {
+      if (!parsed.data.currentPassword) {
+        return sendError(reply, 'Debes ingresar tu contraseña actual', 400)
+      }
       const { default: bcrypt } = await import('bcryptjs')
       const valid = await bcrypt.compare(parsed.data.currentPassword, target.passwordHash)
       if (!valid) return sendError(reply, 'La contraseña actual es incorrecta', 401)
     } else if (!isSelf && !isAdmin) {
       return sendError(reply, 'No tienes permiso para cambiar la contraseña de otro usuario', 403)
+    } else if (!managerCanManage(req.user.role, target.role, target.role)) {
+      return sendError(reply, 'Un gerente no puede restablecer contraseñas administrativas', 403)
     }
 
     const { default: bcrypt } = await import('bcryptjs')
     const passwordHash = await bcrypt.hash(parsed.data.newPassword, 10)
-    await prisma.user.update({ where: { id: target.id }, data: { passwordHash } })
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { passwordHash, sessionVersion: { increment: 1 } },
+    })
 
     return sendOk(reply, { id: target.id, message: 'Contraseña actualizada' })
   })
@@ -168,6 +195,9 @@ export default async function usersRoutes(fastify) {
     })
     if (!existing) return send404(reply, 'Usuario')
     if (req.user.id === existing.id) return send409(reply, 'No puedes eliminar tu propia cuenta')
+    if (!managerCanManage(req.user.role, existing.role, existing.role)) {
+      return sendError(reply, 'Un gerente no puede desactivar cuentas administrativas', 403)
+    }
 
     if (existing.role === 'admin') {
       const adminCount = await prisma.user.count({
@@ -178,7 +208,10 @@ export default async function usersRoutes(fastify) {
       }
     }
 
-    await prisma.user.update({ where: { id: existing.id }, data: { isActive: false } })
+    await prisma.user.update({
+      where: { id: existing.id },
+      data: { isActive: false, sessionVersion: { increment: 1 } },
+    })
     return sendOk(reply, { id: existing.id, deleted: true })
   })
 
